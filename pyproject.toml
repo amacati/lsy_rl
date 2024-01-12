@@ -1,0 +1,40 @@
+# pyproject.toml
+
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lsy_rl"
+version = "0.0.1"
+description = "RL framework for the Learning Systems and Robotics Lab at TU Munich"
+readme = "README.md"
+authors = [{ name = "Martin Schuck", email = "real.amacati@gmail.com" }]
+license = { file = "LICENSE" }
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+]
+keywords = ["gym", "reinforcement learning", "deep learning", "robotics"]
+dependencies = ["gymnasium >= 0.27.0", "numpy >= 1.21.0"]
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+# [project.urls]
+# Homepage = "https://github.com/amacati/lsy_rl"
+# Repository = "https://github.com/amacati/lsy_rl"
+
+[tool.setuptools.packages.find]
+namespaces = true
+
+[tool.yapf]
+column_limit = 100
+based_on_style = "google"
+spaces_before_comment = 2
