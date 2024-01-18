@@ -1,23 +1,21 @@
-import logging
 from pathlib import Path
 from types import SimpleNamespace
 
 import torch
 import numpy as np
 from gymnasium.vector import VectorEnv
+from gymnasium import spaces
 
 from lsy_rl.core import Algorithm
 from lsy_rl.core.logger import Logger
 from lsy_rl.utils import space_info
 from lsy_rl.wrappers.tensor_wrapper import TensorWrapper
-from lsy_rl.ddpg.config import DDPGConfig, EnvConfig, TrainConfig, EvalConfig, CheckpointConfig
-from lsy_rl.ddpg.config import RolloutConfig
-from lsy_rl.ddpg.policy import DDPGPolicy
-
-logger = logging.getLogger(__name__)
+from lsy_rl.dqn.config import DQNConfig, EnvConfig, TrainConfig, EvalConfig, CheckpointConfig
+from lsy_rl.dqn.config import RolloutConfig
+from lsy_rl.dqn.policy import DQNPolicy
 
 
-class DDPG(Algorithm):
+class DQN(Algorithm):
 
     def __init__(self,
                  env: VectorEnv,
@@ -27,27 +25,26 @@ class DDPG(Algorithm):
         super().__init__()
         assert hasattr(env, "num_envs"), "The environment must have a 'num_envs' attribute."
         self.config = self._parse_config(config)
-
         # Create wrapped environments so that the observations and actions are always Tensors
         self.env = TensorWrapper(env, device=self.config.train.device)
         self.eval_env = TensorWrapper(eval_env, device=self.config.train.device)
+        # Check if the action space is multi-discrete. Discrete action spaces are converted to
+        # multi-discrete for vectorized environments, and we only support vectorized environments
+        if not isinstance(self.env.action_space, spaces.MultiDiscrete):
+            raise TypeError(("The action space must be multi-discrete, is type "
+                             f"{self.env.action_space}."))
+        assert all(nvec == self.env.action_space.nvec[0] for nvec in self.env.action_space.nvec)
         self.logger = logger
 
-        # Initialize the policy with actor and critic networks
+        # Initialize the policy
         obs_shape, _ = space_info(env, mode="obs")
-        action_shape, _ = space_info(env, mode="action")
-        self.config.train.actor_kwargs |= {"obs_dim": obs_shape[0], "action_dim": action_shape[0]}
-        actor = self.config.train.actor_class(**self.config.train.actor_kwargs)
-        self.config.train.policy_kwargs["actor"] = actor
-        self.config.train.critic_kwargs |= {"obs_dim": obs_shape[0], "action_dim": action_shape[0]}
-        critic = self.config.train.critic_class(**self.config.train.critic_kwargs)
-        self.config.train.policy_kwargs["critic"] = critic
-        self.policy = DDPGPolicy(**self.config.train.policy_kwargs, device=self.config.train.device)
+        self.num_actions = self.env.action_space.nvec[0]
+        self.config.train.net_kwargs |= {"obs_dim": obs_shape[0], "action_dim": self.num_actions}
+        network = self.config.train.net_class(**self.config.train.net_kwargs)
+        self.config.train.policy_kwargs["network"] = network
+        self.policy = DQNPolicy(**self.config.train.policy_kwargs, device=self.config.train.device)
         # Initialize the optimizers
-        self.actor_optimizer = torch.optim.AdamW(self.policy.actor.parameters(),
-                                                 lr=self.config.train.actor_lr)
-        self.critic_optimizer = torch.optim.AdamW(self.policy.critic.parameters(),
-                                                  lr=self.config.train.critic_lr)
+        self.optimizer = torch.optim.AdamW(self.policy.dqn.parameters(), lr=self.config.train.lr)
         # Initialize the replay buffer
         self.config.rollout.replay_buffer_kwargs |= {"env": env, "device": self.config.train.device}
         buffer_cls = self.config.rollout.replay_buffer_class
@@ -59,16 +56,10 @@ class DDPG(Algorithm):
             "rewards": torch.zeros(self.env.num_envs, device=self.config.train.device),
             "steps": torch.zeros(self.env.num_envs, device=self.config.train.device),
         }
-        self.train_info = {
-            "num_samples": 0,
-            "num_gradient_steps": 0,
-            "actor_loss": 0,
-            "actor_steps_since_log": 0,
-            "critic_loss": 0,
-            "critic_steps_since_log": 0
-        }
-        freq = min((self.config.train.actor_freq, self.config.train.critic_freq))
-        grad_steps = (self.config.rollout.max_samples // freq) * self.config.train.gradient_steps
+        self.train_info = {"num_samples": 0, "num_gradient_steps": 0, "loss": 0}
+        # Reduce the number of log entries during training for performance reasons
+        train_steps = self.config.rollout.max_samples // self.config.train.freq
+        grad_steps = train_steps * self.config.train.gradient_steps
         self.train_info["log_freq"] = max(1, grad_steps // 1000)  # Log 1000 times during training
         self.eval_info = {
             "num_samples": 0,
@@ -87,9 +78,7 @@ class DDPG(Algorithm):
         if self.rollout_info["num_samples"] < self.config.train.batch_size:
             return False
         num_samples = self.rollout_info["num_samples"] - self.train_info["num_samples"]
-        if num_samples >= self.config.train.actor_freq:
-            return True
-        if num_samples >= self.config.train.critic_freq:
+        if num_samples >= self.config.train.freq:
             return True
         return False
 
@@ -118,7 +107,7 @@ class DDPG(Algorithm):
 
     @torch.no_grad()
     def collect_samples(self):
-        self.policy.actor.eval()
+        self.policy.dqn.eval()
 
         # If first rollout, reset the environment
         if not "obs" in self.rollout_info:
@@ -128,9 +117,11 @@ class DDPG(Algorithm):
         # Calculate how many samples to collect before we need to interrupt for any callbacks
         required_samples = self.rollout_info["num_samples"] + self._next_required_samples()
         while self.rollout_info["num_samples"] < required_samples:
-            action = self.policy.actor(obs)
-            action += torch.randn_like(action) * self.config.rollout.action_noise
-            action = torch.clamp(action, -1, 1)
+            action = self.policy.action(obs)
+            # Add exploration noise to the action
+            rand_actions = torch.randint_like(action, 0, self.num_actions)
+            random_mask = torch.rand_like(action, dtype=torch.float32) < self.config.rollout.epsilon
+            action[random_mask] = rand_actions[random_mask]
             next_obs, reward, terminated, truncated, info = self.env.step(action)
             self.buffer.add(obs, action, reward, next_obs, terminated, truncated)
             obs = next_obs
@@ -148,65 +139,37 @@ class DDPG(Algorithm):
                 self.rollout_info["rewards"][terminated | truncated] = 0
 
         self.rollout_info["obs"] = obs
-        self.policy.actor.train()
+        self.policy.dqn.train()
 
     def train_policy(self):
-        self.policy.actor.train()  # Critic is always in train mode, not used for inference
+        self.policy.dqn.train()
         for _ in range(self.config.train.gradient_steps):
             # Sample experience from the replay buffer
-            # batch = self.buffer.sample(self.config.train.batch_size)
-            # obs, action, reward, next_obs, terminated, truncated = batch
-
-            if self.train_info["num_gradient_steps"] % self.config.train.critic_freq == 0:
-                # Compute the expected Q values with the reward and the target networks
-                batch = self.buffer.sample(self.config.train.batch_size)
-                obs, action, reward, next_obs, terminated, truncated = batch
-                with torch.no_grad():
-                    next_action = self.policy.actor.target(next_obs)
-                    next_q_target = self.policy.critic.target(next_obs, next_action)
-                    q_target = reward + (self.config.train.gamma * ~terminated * next_q_target)
-                    # TODO: include reward clipping?
-                # Compute the loss as the MSE between the expected Q values and the Q values from
-                # the critic
-                q_expected = self.policy.critic(obs, action)
-                critic_loss = torch.mean((q_expected - q_target)**2)
-                self.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                self.critic_optimizer.step()
-                self.train_info["critic_loss"] += critic_loss.detach()
-                self.train_info["critic_steps_since_log"] += 1
-
-            if self.train_info["num_gradient_steps"] % self.config.train.actor_freq == 0:
-                # Compute the actions for the sample observations, compute the critic value of the
-                # observations and actions and compute the actor loss by maximizing the critic value
-                batch = self.buffer.sample(self.config.train.batch_size)
-                obs, action, reward, next_obs, terminated, truncated = batch
-                train_action = self.policy.actor(obs)
-                action_noise = torch.randn_like(train_action) * self.config.train.action_noise
-                train_action = torch.clamp(train_action + action_noise, -1, 1)
-                actor_loss = -self.policy.critic(obs, train_action).mean()
-
-                self.actor_optimizer.zero_grad()
-                actor_loss.backward()
-                self.actor_optimizer.step()
-                self.train_info["actor_loss"] += actor_loss.detach()
-                self.train_info["actor_steps_since_log"] += 1
-            # Update 'num_gradient_steps' before target networks to prevent updating them at the
-            # first training step
+            batch = self.buffer.sample(self.config.train.batch_size)
+            obs, action, reward, next_obs, terminated, truncated = batch
+            dqn, target_dqn = self.policy.dqn.get_network_and_target()
+            self.optimizer.zero_grad()
+            q = dqn(obs)[range(self.config.train.batch_size), action]
+            with torch.no_grad():
+                a_next = torch.max(dqn(next_obs), 1).indices
+                q_next = target_dqn(next_obs)[range(self.config.train.batch_size), a_next]
+                q_next = torch.clamp(q_next, -self.config.train.q_clip, self.config.train.q_clip)
+                q_td = reward + self.config.train.gamma * q_next * ~terminated
+            loss = (q - q_td).pow(2).mean()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(dqn.parameters(), self.config.train.grad_clip)
+            self.optimizer.step()
             self.train_info["num_gradient_steps"] += 1
-
-            self._rate_limit_train_log()
-            # Update the target networks
-            if self.train_info["num_gradient_steps"] % self.config.train.actor_target_freq == 0:
-                self.policy.actor.update_target(self.config.train.tau)
-            if self.train_info["num_gradient_steps"] % self.config.train.critic_target_freq == 0:
-                self.policy.critic.update_target(self.config.train.tau)
-
+            self.train_info["loss"] += loss.detach()  # Accumulate loss for logging
+            if self.train_info["num_gradient_steps"] % self.train_info["log_freq"] == 0:
+                data = {"train/loss": self.train_info["loss"] / self.train_info["log_freq"]}
+                self.logger.log(data, step=self.rollout_info["num_samples"])
+                self.train_info["loss"] = 0
         self._update_train_info()
 
     @torch.no_grad()
     def evaluate_policy(self):
-        self.policy.actor.eval()
+        self.policy.dqn.eval()
         obs, _ = self.eval_env.reset()
         num_samples = 0
         rewards, ep_rewards, ep_steps = [], [], []
@@ -232,7 +195,7 @@ class DDPG(Algorithm):
         }
         self.logger.log(data, step=self.rollout_info["num_samples"])
         self._update_eval_info()
-        self.policy.actor.train()
+        self.policy.dqn.train()
 
     def save_checkpoint(self):
         assert self.config.checkpoint.path.is_dir(), "The checkpoint path must be a directory."
@@ -243,17 +206,14 @@ class DDPG(Algorithm):
     def _next_required_samples(self):
         # Calculate required samples for next training step
         current_samples = self.rollout_info["num_samples"] - self.train_info["num_samples"]
-        actor_train_samples = self.config.train.actor_freq - current_samples
-        critic_train_samples = self.config.train.critic_freq - current_samples
-        train_samples = min([actor_train_samples, critic_train_samples])
+        train_samples = self.config.train.freq - current_samples
         # Check if we have enough samples for a batch. If not, collect as many samples as required
         # to fill a batch
         if self.rollout_info["num_samples"] - self.config.train.batch_size < 0:
             if train_samples < self.config.train.batch_size - self.rollout_info["num_samples"]:
                 train_samples = self.config.train.batch_size - self.rollout_info["num_samples"]
         if train_samples == 0:
-            train_samples = min((self.config.train.actor_freq, self.config.train.critic_freq))
-
+            train_samples = self.config.train.freq
         # Calculate required samples for next eval step
         current_samples = self.rollout_info["num_samples"] - self.eval_info["num_samples"]
         eval_samples = self.config.eval.freq - current_samples
@@ -266,22 +226,6 @@ class DDPG(Algorithm):
             checkpoint_samples = self.config.checkpoint.freq - current_samples
         return min([train_samples, eval_samples, checkpoint_samples])
 
-    def _rate_limit_train_log(self):
-        if self.train_info["num_gradient_steps"] % self.train_info["log_freq"] == 0:
-            data = {}
-            if self.train_info["actor_steps_since_log"] > 0:
-                data["train/actor_loss"] = (self.train_info["actor_loss"] /
-                                            self.train_info["actor_steps_since_log"])
-                self.train_info["actor_loss"] = 0
-                self.train_info["actor_steps_since_log"] = 0
-            if self.train_info["critic_steps_since_log"] > 0:
-                data["train/critic_loss"] = (self.train_info["critic_loss"] /
-                                             self.train_info["critic_steps_since_log"])
-                self.train_info["critic_loss"] = 0
-                self.train_info["critic_steps_since_log"] = 0
-            if data:
-                self.logger.log(data, step=self.rollout_info["num_samples"])
-
     def _update_train_info(self):
         self.train_info["num_samples"] = self.rollout_info["num_samples"]
 
@@ -292,23 +236,19 @@ class DDPG(Algorithm):
         self.eval_info["steps"][...] = 0
         self.eval_info["rewards"][...] = 0
 
-    def _parse_config(self, config: SimpleNamespace) -> DDPGConfig:
+    def _parse_config(self, config: SimpleNamespace) -> DQNConfig:
         # Create env config
         env_config = EnvConfig(**vars(config.env))
         rollout_config = RolloutConfig(**vars(config.rollout))
         train_config = TrainConfig(**vars(config.train))
         eval_config = EvalConfig(**vars(config.eval))
-        if hasattr(config.checkpoint, "path"):
-            config.checkpoint.path = Path(config.checkpoint.path)
-        checkpoint_config = CheckpointConfig(**vars(config.checkpoint))
+        checkpoint_config = CheckpointConfig(config.checkpoint.freq, Path(config.checkpoint.path))
 
         # Check if the config is valid
-        for freq in ("actor_freq", "actor_target_freq", "critic_freq", "critic_target_freq"):
-            freq = getattr(train_config, freq)
-            assert freq > 0, "All training frequencies must be greater than 0."
-            if not freq % env_config.kwargs["num_envs"] == 0:
-                raise ValueError((f"The frequency ({freq}) must be divisible by 'num_envs' "
-                                  f"({env_config.num_envs})."))
+        assert train_config.freq > 0, "The training frequency must be greater than 0."
+        if not train_config.freq % env_config.kwargs["num_envs"] == 0:
+            raise ValueError((f"The train frequency ({train_config.freq}) must be divisible by "
+                              f" 'num_envs' ({env_config.num_envs})."))
         if not eval_config.freq % env_config.kwargs["num_envs"] == 0:
             raise ValueError((f"The 'eval_freq' ({eval_config.freq}) must be divisible by "
                               f"'num_envs' ({env_config.num_envs})."))
@@ -319,4 +259,4 @@ class DDPG(Algorithm):
             if not checkpoint_config.freq % env_config.kwargs["num_envs"] == 0:
                 raise ValueError((f"The 'checkpoint_freq' ({checkpoint_config.freq}) must be "
                                   f"divisible by 'num_envs' ({env_config.num_envs})."))
-        return DDPGConfig(env_config, rollout_config, train_config, eval_config, checkpoint_config)
+        return DQNConfig(env_config, rollout_config, train_config, eval_config, checkpoint_config)

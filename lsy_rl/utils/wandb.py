@@ -23,6 +23,8 @@ class WandBConfig(SimpleNamespace):
             return dict()
         x = SimpleNamespace()
         for k, v in data.items():
+            if v is None:
+                continue
             if isinstance(v["value"], dict):
                 if all(isinstance(v, dict) for v in v["value"].values()):
                     if all(k in ("value", "desc") for keys in v["value"].values() for k in keys):

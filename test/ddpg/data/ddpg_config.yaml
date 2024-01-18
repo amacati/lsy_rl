@@ -1,0 +1,26 @@
+env:
+  value:
+    name:
+      value: Pendulum-v0
+
+rollout:
+  value:
+    max_samples:
+      value: 1000
+
+train:
+  value:
+    gradient_steps:
+      value: 1000
+
+eval:
+  value:
+    freq:
+      value: 100
+    steps:
+      value: 100
+
+checkpoint:
+  value:
+    freq:
+      value: 100

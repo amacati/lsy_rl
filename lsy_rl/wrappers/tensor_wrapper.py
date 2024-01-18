@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Callable
 
 from gymnasium import Env
 
@@ -8,6 +8,13 @@ import numpy as np
 
 
 class TensorWrapper(Env):
+    """A wrapper that converts the actions and observations to Tensors.
+
+    If the environment expects numpy arrays, actions are converted to numpy arrays before being
+    passed to the environment. If the environment expects Tensors, the actions are sent to the
+    device of the environment. If both the environment and the training are on the same device, this
+    wrapper is a no-op. Observations are always converted to Tensors on the training device.
+    """
 
     def __init__(self, env: Env, device: torch.device = torch.device("cpu")):
         super().__init__()
@@ -28,6 +35,9 @@ class TensorWrapper(Env):
         self.action_space = env.action_space
         self.num_envs = env.num_envs
         self.device = device
+        if self.env_mode == "np":  # Patch the sample() methods to return Tensors on the device
+            self.observation_space.sample = self._patch_space(self.env.observation_space.sample)
+            self.action_space.sample = self._patch_space(self.env.action_space.sample)
 
     def step(self,
              action: Tensor) -> tuple[Tensor, FloatTensor, BoolTensor, BoolTensor, dict[str, Any]]:
@@ -70,3 +80,10 @@ class TensorWrapper(Env):
             elif isinstance(value, Tensor):
                 data[key] = value.to(self.output_device)
         return data
+
+    def _patch_space(self, fn: Callable) -> Callable:
+
+        def wrapper():
+            return torch.as_tensor(fn(), device=self.device)
+
+        return wrapper
