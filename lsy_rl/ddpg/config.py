@@ -33,7 +33,7 @@ class RolloutConfig:
     max_samples: int
     action_noise: float = 0.1
     replay_buffer_class: type[ReplayBuffer] = SimpleReplayBuffer
-    replay_buffer_kwargs: dict[str, Any] = field(default_factory=lambda: {"maxlen": 1_000_000})
+    replay_buffer_kwargs: dict[str, Any] = field(default_factory=lambda: {"max_size": 1_000_000})
 
 
 @dataclass

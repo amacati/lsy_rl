@@ -1,9 +1,10 @@
 from typing import Any, Callable
 
 from gymnasium import Env
+from tensordict import TensorDict
 
 import torch
-from torch import FloatTensor, BoolTensor, Tensor
+from torch import Tensor
 import numpy as np
 
 
@@ -16,9 +17,15 @@ class TensorWrapper(Env):
     wrapper is a no-op. Observations are always converted to Tensors on the training device.
     """
 
-    def __init__(self, env: Env, device: torch.device = torch.device("cpu")):
+    def __init__(self,
+                 env: Env,
+                 device: torch.device = torch.device("cpu"),
+                 info_keys: list[str] = []):
         super().__init__()
         self.env = env
+        # Only keep wanted keys in infodict to prevent undesired memory usage or Tensor conversion
+        # errors, e.g. when trying to convert numpy object array
+        self.info_keys = info_keys
 
         # Infer the device of the environment. If the environment action space is a numpy array,
         # we need to convert the step() action to a numpy array before passing it to the
@@ -39,23 +46,30 @@ class TensorWrapper(Env):
             self.observation_space.sample = self._patch_space(self.env.observation_space.sample)
             self.action_space.sample = self._patch_space(self.env.action_space.sample)
 
-    def step(self,
-             action: Tensor) -> tuple[Tensor, FloatTensor, BoolTensor, BoolTensor, dict[str, Any]]:
+    def step(self, action: Tensor) -> TensorDict[str, Tensor]:
+        sample = TensorDict({}, batch_size=self.num_envs, device=self.device)
         action = self._convert_action(action)  # Convert to np if necessary or send to env_device
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        obs = torch.as_tensor(obs, device=self.device)
-        reward = torch.as_tensor(reward, device=self.device)
-        terminated = torch.as_tensor(terminated, dtype=torch.bool, device=self.device)
-        truncated = torch.as_tensor(truncated, dtype=torch.bool, device=self.device)
-        info = self._dict_to_device(info)
-        return obs, reward, terminated, truncated, info
+        next_obs, reward, terminated, truncated, info = self.env.step(action)
+        if self.info_keys:
+            info = {key: value for key, value in info.items() if key in self.info_keys}
+            sample["info"] = TensorDict(info, batch_size=self.num_envs, device=self.device)
+        sample["next_obs"] = torch.as_tensor(next_obs)
+        sample["reward"] = torch.as_tensor(reward)
+        sample["terminated"] = torch.as_tensor(terminated)
+        sample["truncated"] = torch.as_tensor(truncated)
+        return sample
 
     def reset(self,
               *,
               seed: int | None = None,
               options: dict[str, Any] | None = None) -> tuple[Tensor, dict[str, Any]]:
         obs, info = self.env.reset(seed=seed, options=options)
-        return torch.as_tensor(obs, device=self.device), info
+        sample = TensorDict({}, batch_size=self.num_envs, device=self.device)
+        if self.info_keys:
+            info = {key: value for key, value in info.items() if key in self.info_keys}
+            sample["info"] = TensorDict(info, batch_size=self.num_envs, device=self.device)
+        sample["obs"] = torch.as_tensor(obs)
+        return sample
 
     def render(self):
         self.env.render()
@@ -67,19 +81,6 @@ class TensorWrapper(Env):
         if self.env_mode == "np":
             return action.cpu().numpy()
         return action.to(self.env_device)
-
-    def _dict_to_device(self, data: dict) -> dict:
-        for key, value in data.items():
-            if isinstance(value, dict):
-                data[key] = self._dict_to_device(value)
-            elif isinstance(value, list):
-                data[key] = [self._dict_to_device(v) for v in value]
-            elif isinstance(value, np.ndarray):
-                if value.dtype != np.object_:  # Don't convert object arrays
-                    data[key] = torch.as_tensor(value, device=self.device)
-            elif isinstance(value, Tensor):
-                data[key] = value.to(self.output_device)
-        return data
 
     def _patch_space(self, fn: Callable) -> Callable:
 

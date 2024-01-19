@@ -26,6 +26,21 @@ class Logger(ABC):
         ...
 
 
+class EmptyLogger(Logger):
+
+    def __init__(self):
+        super().__init__()
+
+    def log(self, data, step: int, flush: bool = False):
+        ...
+
+    def flush(self):
+        ...
+
+    def stop(self):
+        ...
+
+
 class LoggerList(Logger):
 
     def __init__(self, loggers: list):

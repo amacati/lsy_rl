@@ -7,7 +7,7 @@ import numpy as np
 from gymnasium.vector import VectorEnv
 
 from lsy_rl.core import Algorithm
-from lsy_rl.core.logger import Logger
+from lsy_rl.core.logger import Logger, EmptyLogger
 from lsy_rl.utils import space_info
 from lsy_rl.wrappers.tensor_wrapper import TensorWrapper
 from lsy_rl.ddpg.config import DDPGConfig, EnvConfig, TrainConfig, EvalConfig, CheckpointConfig
@@ -23,7 +23,7 @@ class DDPG(Algorithm):
                  env: VectorEnv,
                  eval_env: VectorEnv,
                  config: SimpleNamespace,
-                 logger: Logger | None = None):
+                 logger: Logger = EmptyLogger()):
         super().__init__()
         assert hasattr(env, "num_envs"), "The environment must have a 'num_envs' attribute."
         self.config = self._parse_config(config)
@@ -49,7 +49,10 @@ class DDPG(Algorithm):
         self.critic_optimizer = torch.optim.AdamW(self.policy.critic.parameters(),
                                                   lr=self.config.train.critic_lr)
         # Initialize the replay buffer
-        self.config.rollout.replay_buffer_kwargs |= {"env": env, "device": self.config.train.device}
+        self.config.rollout.replay_buffer_kwargs |= {
+            "num_envs": self.env.num_envs,
+            "device": self.config.train.device
+        }
         buffer_cls = self.config.rollout.replay_buffer_class
         self.buffer = buffer_cls(**self.config.rollout.replay_buffer_kwargs)
 
@@ -122,30 +125,32 @@ class DDPG(Algorithm):
 
         # If first rollout, reset the environment
         if not "obs" in self.rollout_info:
-            self.rollout_info["obs"], _ = self.env.reset()
+            self.rollout_info["obs"] = self.env.reset()["obs"]
         obs = self.rollout_info["obs"]
 
         # Calculate how many samples to collect before we need to interrupt for any callbacks
         required_samples = self.rollout_info["num_samples"] + self._next_required_samples()
         while self.rollout_info["num_samples"] < required_samples:
             action = self.policy.actor(obs)
-            action += torch.randn_like(action) * self.config.rollout.action_noise
+            action = action + torch.randn_like(action) * self.config.rollout.action_noise
             action = torch.clamp(action, -1, 1)
-            next_obs, reward, terminated, truncated, info = self.env.step(action)
-            self.buffer.add(obs, action, reward, next_obs, terminated, truncated)
-            obs = next_obs
+            sample = self.env.step(action)
+            sample["obs"], sample["action"] = obs, action
+            self.buffer.add(sample)
+            obs = sample["next_obs"]
             self.rollout_info["num_samples"] += self.env.num_envs
             self.rollout_info["steps"] += 1
-            self.rollout_info["rewards"] += reward
+            self.rollout_info["rewards"] += sample["reward"]
 
             # If any of the environments are terminated or truncated, log the episode statistics
-            if any(terminated) or any(truncated):
-                ep_steps = self.rollout_info["steps"][terminated | truncated].mean()
-                ep_reward = self.rollout_info["rewards"][terminated | truncated].mean()
+            if any(sample["terminated"]) or any(sample["truncated"]):
+                idx = sample["terminated"] | sample["truncated"]
+                ep_steps = self.rollout_info["steps"][idx].mean()
+                ep_reward = self.rollout_info["rewards"][idx].mean()
                 data = {"rollout/ep_steps": ep_steps, "rollout/ep_reward": ep_reward}
                 self.logger.log(data, step=self.rollout_info["num_samples"])
-                self.rollout_info["steps"][terminated | truncated] = 0
-                self.rollout_info["rewards"][terminated | truncated] = 0
+                self.rollout_info["steps"][idx] = 0
+                self.rollout_info["rewards"][idx] = 0
 
         self.rollout_info["obs"] = obs
         self.policy.actor.train()
@@ -154,21 +159,23 @@ class DDPG(Algorithm):
         self.policy.actor.train()  # Critic is always in train mode, not used for inference
         for _ in range(self.config.train.gradient_steps):
             # Sample experience from the replay buffer
-            # batch = self.buffer.sample(self.config.train.batch_size)
-            # obs, action, reward, next_obs, terminated, truncated = batch
+            batch = self.buffer.sample(self.config.train.batch_size)
 
             if self.train_info["num_gradient_steps"] % self.config.train.critic_freq == 0:
                 # Compute the expected Q values with the reward and the target networks
-                batch = self.buffer.sample(self.config.train.batch_size)
-                obs, action, reward, next_obs, terminated, truncated = batch
                 with torch.no_grad():
-                    next_action = self.policy.actor.target(next_obs)
-                    next_q_target = self.policy.critic.target(next_obs, next_action)
+                    next_action = self.policy.actor.target(batch["next_obs"])
+                    next_q_target = self.policy.critic.target(batch["next_obs"], next_action)
+                    # Reward, terminated are one-dimensional, so we need to reshape them to avoid
+                    # broadcasting errors
+                    reward = batch["reward"].reshape(-1, 1)
+                    terminated = batch["terminated"].reshape(-1, 1)
                     q_target = reward + (self.config.train.gamma * ~terminated * next_q_target)
                     # TODO: include reward clipping?
                 # Compute the loss as the MSE between the expected Q values and the Q values from
                 # the critic
-                q_expected = self.policy.critic(obs, action)
+                q_expected = self.policy.critic(batch["obs"], batch["action"])
+                assert q_target.shape == (self.config.train.batch_size, 1), q_target.shape
                 critic_loss = torch.mean((q_expected - q_target)**2)
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward()
@@ -179,12 +186,10 @@ class DDPG(Algorithm):
             if self.train_info["num_gradient_steps"] % self.config.train.actor_freq == 0:
                 # Compute the actions for the sample observations, compute the critic value of the
                 # observations and actions and compute the actor loss by maximizing the critic value
-                batch = self.buffer.sample(self.config.train.batch_size)
-                obs, action, reward, next_obs, terminated, truncated = batch
-                train_action = self.policy.actor(obs)
+                train_action = self.policy.actor(batch["obs"])
                 action_noise = torch.randn_like(train_action) * self.config.train.action_noise
                 train_action = torch.clamp(train_action + action_noise, -1, 1)
-                actor_loss = -self.policy.critic(obs, train_action).mean()
+                actor_loss = -self.policy.critic(batch["obs"], train_action).mean()
 
                 self.actor_optimizer.zero_grad()
                 actor_loss.backward()
@@ -207,29 +212,30 @@ class DDPG(Algorithm):
     @torch.no_grad()
     def evaluate_policy(self):
         self.policy.actor.eval()
-        obs, _ = self.eval_env.reset()
+        obs = self.eval_env.reset()["obs"]
         num_samples = 0
         rewards, ep_rewards, ep_steps = [], [], []
         while num_samples < self.config.eval.steps:
             action = self.policy.action(obs)
-            obs, reward, terminated, truncated, info = self.eval_env.step(action)
-            self.eval_info["rewards"] += reward
-            rewards += reward.tolist()
+            sample = self.eval_env.step(action)
+            obs = sample["next_obs"]
+            self.eval_info["rewards"] += sample["reward"]
+            rewards += sample["reward"].tolist()
             self.eval_info["steps"] += 1
 
-            if any(terminated) or any(truncated):
-                ep_steps += self.eval_info["steps"][terminated | truncated].tolist()
-                ep_rewards += self.eval_info["rewards"][terminated | truncated].tolist()
-                self.eval_info["steps"][terminated | truncated] = 0
-                self.eval_info["rewards"][terminated | truncated] = 0
+            if any(sample["terminated"]) or any(sample["truncated"]):
+                idx = sample["terminated"] | sample["truncated"]
+                ep_steps += self.eval_info["steps"][idx].tolist()
+                ep_rewards += self.eval_info["rewards"][idx].tolist()
+                self.eval_info["steps"][idx] = 0
+                self.eval_info["rewards"][idx] = 0
 
             num_samples += self.eval_env.num_envs
 
-        data = {
-            "eval/ep_steps": np.array(ep_steps).mean(),
-            "eval/ep_reward": np.array(ep_rewards).mean(),
-            "eval/mean_reward": np.array(rewards).mean(),
-        }
+        data = {"eval/mean_reward": np.array(rewards).mean()}
+        if ep_rewards:
+            data["eval/ep_mean_reward"] = np.array(ep_rewards).mean()
+            data["eval/ep_mean_steps"] = np.array(ep_steps).mean()
         self.logger.log(data, step=self.rollout_info["num_samples"])
         self._update_eval_info()
         self.policy.actor.train()

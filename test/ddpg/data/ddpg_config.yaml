@@ -6,17 +6,20 @@ env:
 rollout:
   value:
     max_samples:
-      value: 1000
+      value: 10
+
 
 train:
   value:
     gradient_steps:
-      value: 1000
+      value: 2
+    batch_size:
+      value: 2
 
 eval:
   value:
     freq:
-      value: 100
+      value: 5
     steps:
       value: 100
 
