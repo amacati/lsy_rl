@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 from abc import ABC, abstractmethod
+import random
+from typing import Callable
 
 import torch
 from torch import IntTensor
 from tensordict import TensorDict
 import numpy as np
-
-if TYPE_CHECKING:
-    from gymnasium import Space
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +68,6 @@ class SimpleReplayBuffer(ReplayBuffer):
         If the buffer is full, overwrite the oldest samples.
         """
         # Convert all incoming data to tensors
-        sample = sample.flatten_keys()
         num_samples = sample.batch_size[0]
         assert num_samples < self.max_size, "Vectorized sample size must be smaller than the buffer"
         # Check if there are unknown keys in the sample and allocate buffers for them if necessary
@@ -81,22 +78,28 @@ class SimpleReplayBuffer(ReplayBuffer):
         # If num_samples + self._idx > self.max_size, the index wraps around to the beginning of the
         # buffer. We take the index vector modulo ``self.max_size`` to implement this behavior.
         idx = torch.arange(self._idx, self._idx + num_samples) % self.max_size
-        self._copy_to_buffer(idx, sample)
+        self._copy_to_buffer(sample, idx)
         # Update the helper indices
         self._idx = (self._idx + num_samples) % self.max_size
         self._maxidx = min(self._maxidx + num_samples, self.max_size - 1)
 
-    def _copy_to_buffer(self, idx: IntTensor, sample: TensorDict[torch.Tensor]):
-        assert idx.ndim == 1, "Index vector must be one dimensional"
-        assert sample.batch_size[0] == idx.shape[0], "Sample size must match the index"
-        for key, value in sample.items():
-            # Cast to the correct type to avoid type errors when sample keys change dtype in some
-            # episodes (e.g. when the reward changes from float to int at the end of an episode)
-            self.buffer[key][idx, ...] = value.type(self.buffer[key].dtype)
+    def _copy_to_buffer(self, sample: TensorDict[torch.Tensor], idx: torch.Tensor):
+        """Copy the sample to the buffer at the given indices.
+
+        Args:
+            sample: The sample to be copied.
+            idx: The indices where the sample should be copied to.
+        """
+        try:
+            self.buffer[idx] = sample  # Try to copy the sample directly
+        # If the sample dtypes don't match the buffer dtypes, we have to cast them explicitly
+        except RuntimeError:
+            for key in sample.keys():
+                self.buffer[key][idx] = sample[key].to(self.buffer[key].dtype)
 
     def sample(self, batch_size):
         assert batch_size <= self._maxidx + 1, "Not enough samples in the buffer"
-        idx = self.rng.choice(self._maxidx + 1, size=(batch_size,), replace=False)
+        idx = np.array(random.sample(range(self._maxidx + 1), batch_size))
         return self.buffer[idx]
 
     def clear(self):
@@ -104,10 +107,6 @@ class SimpleReplayBuffer(ReplayBuffer):
             b.zero_()
         self._idx = 0
         self._maxidx = -1
-
-    @staticmethod
-    def space_info(obs_space: Space):
-        return obs_space.shape, obs_space.dtype
 
     def save(self, path):
         save_dict = {"idx": self._idx, "maxidx": self._maxidx, "buffer": self.buffer}
@@ -142,39 +141,49 @@ class VectorReplayBuffer(ReplayBuffer):
         self.device = device
         self.buffer = TensorDict({}, batch_size=(self.num_envs, self.bufflen), device=device)
         # Allocate helper for default environment indexing
-        self._default_env_idx = torch.arange(self.num_envs, dtype=int)
+        self._default_v_idx = torch.arange(self.num_envs, dtype=int, device=device)
         # Helper indices to implement a vectorized ring buffer
         # Points to the current ring buffer index
-        self._idx = torch.zeros(self.num_envs, dtype=int)
+        self._idx = torch.zeros(self.num_envs, dtype=int, device=device)
         # Points to the last valid sample
-        self._maxidx = -torch.ones(self.num_envs, dtype=int)
+        self._maxidx: IntTensor = -torch.ones(self.num_envs, dtype=int, device=device)
         # Reproducible random number generator
         self.rng = np.random.default_rng(seed=seed)
 
-    def add(self, sample: TensorDict[torch.Tensor], env_idx: IntTensor | None = None):
+    def add(self, sample: TensorDict[torch.Tensor], v_idx: IntTensor | None = None):
         """Add a vectorized sample to the buffer.
 
         If the buffer is full, overwrite the oldest samples.
         """
         # If no explicit environment index given, assume one sample per env
-        env_idx = env_idx or self._default_env_idx
-        sample.batch_size[0] == env_idx.shape[0], "Sample size must match the env index"
+        v_idx = v_idx or self._default_v_idx
+        sample.batch_size[0] == v_idx.shape[0], "Sample size must match the env index"
         # Check if there are unknown keys in the sample and allocate buffers for them if necessary
-        for key in sample.keys():
-            if key not in self.buffer.keys():
-                self.buffer[key] = torch.empty(
-                    (self.num_envs, self.bufflen, *sample[key].shape[1:]), dtype=sample[key].dtype)
+        self._allocate_buffers(sample)
         # Count the number of samples per environment
-        num_samples = torch.bincount(env_idx, minlength=self.num_envs)
+        num_samples = torch.bincount(v_idx, minlength=self.num_envs).to(self.device)
         assert torch.max(num_samples) < self.bufflen, "Sample sizes must be smaller than the buffer"
         # Compute the indices for each sample
-        idx = self._categorical_cumsum(env_idx) + self._idx[env_idx] % self.bufflen
+        idx = (self._categorical_cumsum(v_idx) + self._idx[v_idx]) % self.bufflen
         # Indices need to be 2D for indexing
-        self._copy_to_buffer(env_idx, idx, sample)
+        self.buffer[v_idx, idx] = sample
         # Update the helper indices
-        self._idx[env_idx] = (self._idx[env_idx] + num_samples[env_idx]) % self.bufflen
-        self._maxidx[env_idx] = torch.min(self._maxidx[env_idx] + num_samples[env_idx],
-                                          torch.ones_like(self._maxidx) * (self.bufflen - 1))
+        self._idx[v_idx] = (self._idx[v_idx] + num_samples[v_idx]) % self.bufflen
+        self._maxidx[v_idx] = torch.min(self._maxidx[v_idx] + num_samples[v_idx],
+                                        torch.ones_like(self._maxidx) * (self.bufflen - 1))
+
+    def _allocate_buffers(self, sample: TensorDict):
+        for key, val in sample.items():
+            if key not in self.buffer.keys():
+                if isinstance(val, torch.Tensor):
+                    self.buffer[key] = torch.zeros((self.num_envs, self.bufflen, *val.shape[1:]),
+                                                   dtype=val.dtype)
+                elif isinstance(val, TensorDict):
+                    self.buffer[key] = TensorDict({},
+                                                  batch_size=(self.num_envs, self.bufflen),
+                                                  device=self.device)
+                else:
+                    raise TypeError(f"Unsupported type {type(val)}")
 
     @staticmethod
     def _categorical_cumsum(x: torch.Tensor) -> torch.Tensor:
@@ -190,30 +199,18 @@ class VectorReplayBuffer(ReplayBuffer):
         idx[inverse, torch.arange(len(x))] = 1
         return idx.cumsum(dim=1)[inverse, torch.arange(len(x))] - 1
 
-    def _copy_to_buffer(self, env_idx: IntTensor, idx: IntTensor, sample: TensorDict[torch.Tensor]):
-        assert env_idx.ndim == 1, "Environment index vector must be 1D"
-        assert idx.ndim == 1, "Index vector must be 1D"
-        assert sample.batch_size[0] == idx.shape[0], "Sample size must match the index"
-        for key, value in sample.items():
-            self.buffer[key][env_idx, idx, ...] = value
-
-    def sample(self, batch_size: int):
+    def sample(self, batch_size: int) -> TensorDict[torch.Tensor]:
         assert batch_size <= torch.sum(self._maxidx + 1), "Not enough samples in the buffer"
-        env_idx = self.rng.choice(self.num_envs, size=batch_size, replace=True)
-        idx = self.rng.integers(self._maxidx[env_idx] + 1, size=batch_size)
-        env_idx = torch.tensor(env_idx).to(self.device)
+        v_idx = torch.randint(self.num_envs, size=(batch_size,), device=self.device)
+        idx = self.rng.integers(self._maxidx[v_idx].cpu() + 1, size=batch_size)
         idx = torch.tensor(idx).to(self.device)
-        return self.buffer[env_idx, idx]
+        return self.buffer[v_idx, idx]
 
     def clear(self):
         for b in self.buffer.values():
             b.zero_()
         self._idx = 0
         self._maxidx = -1
-
-    @staticmethod
-    def space_info(obs_space: Space):
-        return obs_space.shape, obs_space.dtype
 
     def save(self, path):
         save_dict = {"idx": self._idx, "maxidx": self._maxidx, "buffer": self.buffer}
@@ -227,3 +224,131 @@ class VectorReplayBuffer(ReplayBuffer):
 
     def __len__(self) -> int:
         return torch.sum(self._maxidx + 1).item()
+
+
+class HerVectorReplayBuffer(VectorReplayBuffer):
+
+    def __init__(self,
+                 num_envs: int,
+                 max_size: int,
+                 reward_fn: Callable,
+                 p_her: float = 0.8,
+                 device: torch.device = torch.device("cpu"),
+                 seed: int | None = None):
+        super().__init__(num_envs, max_size, device, seed)
+        self.reward_fn = reward_fn
+        self.p_her = p_her
+        # We track the remaining steps to the end of the episode for each environment. This has two
+        # purposes: First, we need the remaining steps to sample a virtual goal from the same
+        # trajectory. Second, we need to know when we are about to overwrite an old trajectory. In
+        # that case, we invalidate the indices of the whole next episode by setting the remaining
+        # steps to -1
+        self._idx = 0
+        self._maxidx = -1
+        self._remaining_steps = torch.empty((num_envs, max_size // num_envs),
+                                            dtype=int,
+                                            device=self.device)
+        self._remaining_steps[:] = -1
+        self._running_steps = torch.zeros((num_envs,), dtype=int, device=self.device)
+        self._invalid_idx = torch.zeros((num_envs, 2), dtype=int, device=self.device)
+        self._invalid_idx[:, 1] = self.bufflen - 1
+
+    def add(self, sample: TensorDict[torch.Tensor]):
+        """Add a vectorized sample to the buffer.
+
+        If the buffer is full, overwrite the oldest samples.
+        """
+        # ToDo: Clean up this function, it's a mess right now
+        self._allocate_buffers(sample)
+        # A sample must contain exactly one sample per vector entry
+        v_idx = self._default_v_idx
+        idx = self._idx
+        assert sample.batch_size[0] == v_idx.shape[0], "Sample size must match the env index"
+        # +1 because we overwrite to 0 inclusive
+        overwrite_len = self._remaining_steps[v_idx, (idx + 1) % self.bufflen] + 1
+        for i, l in enumerate(overwrite_len):
+            if l:
+                ep_idx = (torch.arange(l, device=self.device) + idx + 1) % self.bufflen
+                self._remaining_steps[i, ep_idx] = -1
+                self._invalid_idx[i, 0] = (idx + 1) % self.bufflen
+                self._invalid_idx[i, 1] = (ep_idx[-1] + 1) % self.bufflen
+        self._running_steps += 1
+        done = sample["terminated"] | sample["truncated"]
+        # If the episode is done, we need to update the remaining steps to the end of the episode
+        # for the current and all previous samples
+        for i, d in enumerate(done):
+            if d:
+                # +1 because we overwrite to 0 inclusive
+                ep_idx = (torch.arange(-self._running_steps[i] + 1, 1, device=self.device) +
+                          idx) % self.bufflen
+                self._remaining_steps[i, ep_idx] = torch.arange(self._running_steps[i] - 1,
+                                                                -1,
+                                                                -1,
+                                                                device=self.device)
+                self._invalid_idx[i, 0] = (ep_idx[-1] + 1) % self.bufflen
+        self._running_steps[done] = 0
+        self.buffer[v_idx, idx] = sample
+        # Update the helper indices
+        self._idx = (self._idx + 1) % self.bufflen
+        self._maxidx = min(self._maxidx + 1, self.bufflen - 1)
+
+    def sample(self, batch_size: int) -> TensorDict[torch.Tensor]:
+        """Sample a batch of hindsight experience transitions from the buffer.
+
+        Todo:
+            * Add episode validation to the buffer. Currently, we assume that the buffer is sampled
+                when all episodes are done, and that all episodes truncate at the same time.
+            * Handle next_obs and next_achieved_goal. Currently, we use the next achieved goal
+                independent of episode termination. This is not correct. We should also store the
+                achieved goal for the last step of the episode and use it as the next goal for the
+                resampled goals.
+        
+        Args:
+            batch_size: The batch size.
+        """
+        assert batch_size <= self.num_envs * (self._maxidx + 1), "Not enough samples in the buffer"
+        # Hindsight sample selection:
+        # We need to sample from the valid indices. We track the invalid indices in the buffer with
+        # the _invalid_idx helper. To sample only valid indices, we take the following steps:
+        # 1.) Randomly sample a vector index
+        # 2.) Compute the number of invalid samples per vector entry
+        # a.) If the invalid index wraps around the buffer, we need to sum the samples from the end
+        #     of the buffer with those from the beginning.
+        # b.) If the invalid index does not wrap around the buffer, we can simply subtract the end
+        #     index from the start index.
+        # 3.) Sample random integers from the range [0, maxidx + 1 - n_invalid). We then offset the
+        #     sampled indices by the end index of the invalid index modulo  the maximum index.
+        # 4.) Clone the batch to prevent the overwriting of the original data
+        # 5.) Sample HER indices where we replace the goal with a virtual goal from the same
+        #     trajectory
+        # 6.) Compute a random offset to a future sample of the same trajectory for the HER samples.
+        #     We track the remaining steps to the end of the episode for each sample and use this
+        #     information to randomly offset the HER samples within the same trajectory.
+        # 7.) Set the desired goal of the HER samples to the virtual goal and recalculate the reward
+        v_idx = torch.randint(self.num_envs, size=(batch_size,), device=self.device)
+        invalid_idx = self._invalid_idx[v_idx]
+        wrapped = invalid_idx[:, 0] > invalid_idx[:, 1]
+        # Compute the number of invalid samples per vector entry
+        n_invalid_wrapped = self.bufflen - invalid_idx[:, 0] + invalid_idx[:, 1]
+        n_invalid_unwrapped = invalid_idx[:, 1] - invalid_idx[:, 0] + 1
+        n_invalid = torch.where(wrapped, n_invalid_wrapped, n_invalid_unwrapped)
+        # Sample random indices within the valid range
+        idx_interval = self.bufflen - n_invalid
+        rand_idx = (torch.rand(batch_size, device=self.device) * (idx_interval)).long()
+        idx = (rand_idx + invalid_idx[:, 1] + 1) % self.bufflen
+        assert torch.all(self._remaining_steps[v_idx, idx] >= 0)  # Check if all samples are valid
+        # Clone the batch and sample HER indices
+        batch = self.buffer[v_idx, idx].clone()
+        her_idx = torch.randperm(batch_size, device=self.device)[:int(batch_size * self.p_her)]
+        # Compute the random offset for the HER samples
+        offset_interval = self._remaining_steps[v_idx, idx] + 1
+        offset = (torch.rand(batch_size, device=self.device) * offset_interval).long()
+        offset_idx = (idx + offset) % self.bufflen
+        # Update the batch with virtual goals for HER samples
+        virtual_goals = self.buffer["obs"]["achieved_goal"][v_idx[her_idx], offset_idx[her_idx]]
+        batch["obs"]["desired_goal"][her_idx] = virtual_goals
+        achieved_goals = self.buffer["next_obs"]["achieved_goal"][v_idx, idx]
+        # Overwrite all rewards. Updates the rewards in-place. If we overwrite only those rewards
+        # that are affected by HER, we would need to copy the buffer first
+        batch["reward"] = self.reward_fn(achieved_goals, batch["obs"]["desired_goal"])
+        return batch

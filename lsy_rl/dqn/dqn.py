@@ -9,7 +9,7 @@ from gymnasium import spaces
 from lsy_rl.core import Algorithm
 from lsy_rl.core.logger import Logger
 from lsy_rl.utils import space_info
-from lsy_rl.wrappers.tensor_wrapper import TensorWrapper
+from lsy_rl.wrappers.tensordict_wrapper import TensorDictWrapper
 from lsy_rl.dqn.config import DQNConfig, EnvConfig, TrainConfig, EvalConfig, CheckpointConfig
 from lsy_rl.dqn.config import RolloutConfig
 from lsy_rl.dqn.policy import DQNPolicy
@@ -26,8 +26,8 @@ class DQN(Algorithm):
         assert hasattr(env, "num_envs"), "The environment must have a 'num_envs' attribute."
         self.config = self._parse_config(config)
         # Create wrapped environments so that the observations and actions are always Tensors
-        self.env = TensorWrapper(env, device=self.config.train.device)
-        self.eval_env = TensorWrapper(eval_env, device=self.config.train.device)
+        self.env = TensorDictWrapper(env, device=self.config.train.device)
+        self.eval_env = TensorDictWrapper(eval_env, device=self.config.train.device)
         # Check if the action space is multi-discrete. Discrete action spaces are converted to
         # multi-discrete for vectorized environments, and we only support vectorized environments
         if not isinstance(self.env.action_space, spaces.MultiDiscrete):

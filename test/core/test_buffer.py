@@ -4,7 +4,7 @@ import gymnasium
 from tensordict import merge_tensordicts
 
 from lsy_rl.core.replay_buffer import VectorReplayBuffer, SimpleReplayBuffer
-from lsy_rl.wrappers.tensor_wrapper import TensorWrapper
+from lsy_rl.wrappers.tensordict_wrapper import TensorDictWrapper
 
 
 def cuda_not_available() -> bool:
@@ -27,7 +27,7 @@ def test_simple_init(device):
                   marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."))))
 def test_simple_add(device):
     num_envs = 2
-    env = TensorWrapper(gymnasium.vector.make("Pendulum-v1", num_envs=num_envs), device=device)
+    env = TensorDictWrapper(gymnasium.vector.make("Pendulum-v1", num_envs=num_envs), device=device)
     buffer = SimpleReplayBuffer(num_envs=num_envs, max_size=10, device=device)
     obs = env.reset()["obs"]
     action = env.action_space.sample()
@@ -46,7 +46,7 @@ def test_simple_add(device):
 def test_simple_add_wrap(device):
     num_envs, max_size = 2, 11  # Wraps around after 5 steps
     assert max_size % num_envs != 0, "max_size must not be divisible by num_envs for wrap test"
-    env = TensorWrapper(gymnasium.vector.make("Pendulum-v1", num_envs=num_envs), device=device)
+    env = TensorDictWrapper(gymnasium.vector.make("Pendulum-v1", num_envs=num_envs), device=device)
     buffer = SimpleReplayBuffer(num_envs=num_envs, max_size=max_size, device=device)
     obs = env.reset()["obs"]
     action = env.action_space.sample()
@@ -79,7 +79,7 @@ def test_vector_init(device):
                   marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."))))
 def test_vector_add(device):
     num_envs = 2
-    env = TensorWrapper(gymnasium.vector.make("Pendulum-v1", num_envs=num_envs), device=device)
+    env = TensorDictWrapper(gymnasium.vector.make("Pendulum-v1", num_envs=num_envs), device=device)
     buffer = VectorReplayBuffer(num_envs=num_envs, max_size=10, device=device)
     assert isinstance(env.observation_space.sample(), torch.Tensor)
     sample = env.reset()
@@ -97,13 +97,14 @@ def test_vector_add(device):
                   marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."))))
 def test_vector_sample(device):
     num_envs = 2
-    env = TensorWrapper(gymnasium.vector.make("Pendulum-v1", num_envs=num_envs), device=device)
+    env = TensorDictWrapper(gymnasium.vector.make("Pendulum-v1", num_envs=num_envs), device=device)
     buffer = VectorReplayBuffer(num_envs=num_envs, max_size=10, device=device)
     assert isinstance(env.observation_space.sample(), torch.Tensor)
-    sample = env.reset()
+    obs = env.reset()["obs"]
     action = env.action_space.sample()
-    next_sample = env.step(action)
-    sample = merge_tensordicts(sample, next_sample)
+    sample = env.step(action)
+    sample["obs"], sample["action"] = obs, action
     for _ in range(10):
         buffer.add(sample)
-    buffer.sample(10)
+    sample = buffer.sample(10)
+    assert sample["obs"].shape == (10, 3)

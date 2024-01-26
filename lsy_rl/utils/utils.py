@@ -1,9 +1,11 @@
-from typing import Iterable
+import logging
 
 import numpy as np
 import gymnasium
 import torch
 import torch.nn as nn
+
+logger = logging.getLogger(__name__)
 
 
 def polyak_update_(target_net: nn.Module, net: nn.Module, tau: float):
@@ -21,14 +23,6 @@ def polyak_update_(target_net: nn.Module, net: nn.Module, tau: float):
     assert 0.0 <= tau <= 1.0, "tau must be in [0, 1]"
     for target_param, param in zip(target_net.parameters(), net.parameters()):
         target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
-
-
-def space_info(env: gymnasium.Env, mode: str = "obs"):
-    assert mode in ["obs", "action"], "mode must be either 'obs' or 'action'"
-    assert isinstance(env, (gymnasium.Env, gymnasium.experimental.VectorEnv)), type(env)
-    space = env.observation_space if mode == "obs" else env.action_space
-    idx = 1 if hasattr(env, "num_envs") else 0  # Remove shape of num_envs for vector envs
-    return space.shape[idx:], space.dtype
 
 
 def torchify(x: np.ndarray, device: torch.device = torch.device("cpu")) -> torch.Tensor:

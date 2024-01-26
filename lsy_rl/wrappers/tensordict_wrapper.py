@@ -7,8 +7,27 @@ import torch
 from torch import Tensor
 import numpy as np
 
+from lsy_rl.wrappers.orbit_wrapper import OrbitWrapper
 
-class TensorWrapper(Env):
+
+def TensorDictWrapper(env: Env,
+                      device: torch.device = torch.device("cpu"),
+                      info_keys: list[str] = []) -> Env:
+    """Determine the type of the environment and dispatch to the appropriate TensorDictWrapper.
+
+    Some environments expect numpy arrays as input, others expect Tensors. If Tensors are
+    expected, we ensure that they are on the correct device to avoid unnecessary data transfers.
+    """
+    try:
+        from omni.isaac.orbit.envs import RLTaskEnv
+        if isinstance(env.unwrapped, RLTaskEnv):
+            return OrbitWrapper(env, device=device)
+    except ImportError:  # IsaacSim is not installed or not open
+        pass
+    return DefaultTensorDictWrapper(env, device=device, info_keys=info_keys)
+
+
+class DefaultTensorDictWrapper(Env):
     """A wrapper that converts the actions and observations to Tensors.
 
     If the environment expects numpy arrays, actions are converted to numpy arrays before being
@@ -31,12 +50,7 @@ class TensorWrapper(Env):
         # we need to convert the step() action to a numpy array before passing it to the
         # environment. If the environment action space is a Tensor, we ensure that it is on the
         # correct device
-        self.env_device = torch.device("cpu")
-        self.env_mode = "np"
-        sample_action = self.env.action_space.sample()
-        if isinstance(sample_action, Tensor):
-            self.env_mode = "torch"
-            self.env_device = sample_action.device
+        self.env_mode, self.env_device = self._determine_env_mode(env)
 
         self.observation_space = env.observation_space
         self.action_space = env.action_space
@@ -47,13 +61,13 @@ class TensorWrapper(Env):
             self.action_space.sample = self._patch_space(self.env.action_space.sample)
 
     def step(self, action: Tensor) -> TensorDict[str, Tensor]:
-        sample = TensorDict({}, batch_size=self.num_envs, device=self.device)
+        sample = TensorDict({"action": action}, batch_size=self.num_envs, device=self.device)
         action = self._convert_action(action)  # Convert to np if necessary or send to env_device
         next_obs, reward, terminated, truncated, info = self.env.step(action)
         if self.info_keys:
             info = {key: value for key, value in info.items() if key in self.info_keys}
             sample["info"] = TensorDict(info, batch_size=self.num_envs, device=self.device)
-        sample["next_obs"] = torch.as_tensor(next_obs)
+        sample["next_obs"] = self.transform_obs(next_obs)
         sample["reward"] = torch.as_tensor(reward)
         sample["terminated"] = torch.as_tensor(terminated)
         sample["truncated"] = torch.as_tensor(truncated)
@@ -68,8 +82,19 @@ class TensorWrapper(Env):
         if self.info_keys:
             info = {key: value for key, value in info.items() if key in self.info_keys}
             sample["info"] = TensorDict(info, batch_size=self.num_envs, device=self.device)
-        sample["obs"] = torch.as_tensor(obs)
+        sample["obs"] = self.transform_obs(obs)
         return sample
+
+    def transform_obs(self, obs: np.ndarray | Tensor | dict[str:np.ndarray]) -> Tensor | TensorDict:
+        match obs:
+            case np.ndarray():
+                return torch.as_tensor(obs, device=self.device)
+            case dict():
+                return TensorDict(obs, batch_size=self.num_envs, device=self.device)
+            case Tensor():
+                return obs.to(self.device)
+            case _:
+                raise TypeError(f"Unsupported type {type(obs)}")
 
     def render(self):
         self.env.render()
@@ -88,3 +113,21 @@ class TensorWrapper(Env):
             return torch.as_tensor(fn(), device=self.device)
 
         return wrapper
+
+    def _determine_env_mode(self, env: Env) -> tuple[str, torch.device]:
+        """Determine the input type and device of the environment.
+
+        Some environments expect numpy arrays as input, others expect Tensors. If Tensors are
+        expected, we ensure that they are on the correct device to avoid unnecessary data transfers.
+        """
+        try:
+            from omni.isaac.orbit.envs import RLTaskEnv
+            if isinstance(env.unwrapped, RLTaskEnv):
+                return "torch", torch.device("cuda")
+        except ImportError:  # IsaacSim is not installed or not open
+            pass
+        if isinstance(env.action_space.sample(), np.ndarray):
+            return "np", torch.device("cpu")
+        elif isinstance(env.action_space.sample(), Tensor):
+            return "torch", env.action_space.sample().device
+        raise TypeError(f"Unsupported action space {type(env.action_space.sample())}")

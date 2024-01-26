@@ -1,16 +1,21 @@
+from pathlib import Path
+
 import torch
 from torch import FloatTensor
 import torch.nn as nn
+from gymnasium.spaces import Box
 
 from lsy_rl.core.policy import Policy
 from lsy_rl.utils import polyak_update_
-from pathlib import Path
 
 
 class DDPGActor(nn.Module):
 
-    def __init__(self, obs_dim: int, action_dim: int):
+    def __init__(self, obs_space: Box, action_space: Box):
         super().__init__()
+        assert isinstance(obs_space, Box), f"Invalid obs space type {type(obs_space)}"
+        assert isinstance(action_space, Box), f"Invalid action space type {type(action_space)}"
+        obs_dim, action_dim = obs_space.shape[1], action_space.shape[1]  # Remove num_envs dimension
         self.network = DDPGActorNetwork(obs_dim, action_dim)
         # Initialize the target network and synchronize the weights
         self.target_network = DDPGActorNetwork(obs_dim, action_dim)
@@ -51,8 +56,11 @@ class DDPGActorNetwork(nn.Module):
 
 class DDPGCritic(nn.Module):
 
-    def __init__(self, obs_dim: int, action_dim: int):
+    def __init__(self, obs_space: Box, action_space: Box):
         super().__init__()
+        assert isinstance(obs_space, Box), f"Invalid obs space type {type(obs_space)}"
+        assert isinstance(action_space, Box), f"Invalid action space type {type(action_space)}"
+        obs_dim, action_dim = obs_space.shape[1], action_space.shape[1]  # Remove num_envs dimension
         self.network = DDPGCriticNetwork(obs_dim + action_dim)
         # Initialize the target network and synchronize the weights
         self.target_network = DDPGCriticNetwork(obs_dim + action_dim)

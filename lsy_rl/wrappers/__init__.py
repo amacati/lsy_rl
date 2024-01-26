@@ -1,3 +1,3 @@
-from lsy_rl.wrappers.tensor_wrapper import TensorWrapper
+from lsy_rl.wrappers.tensordict_wrapper import TensorDictWrapper
 
-__all__ = ["TensorWrapper"]
+__all__ = ["TensorDictWrapper"]
