@@ -4,6 +4,7 @@ import logging
 from abc import ABC, abstractmethod
 import random
 from typing import Callable
+import sys
 
 import torch
 from torch import IntTensor
@@ -11,6 +12,10 @@ from tensordict import TensorDict
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+def replay_buffer_cls(name: str) -> type[ReplayBuffer]:
+    return getattr(sys.modules[__name__], name)
 
 
 class ReplayBuffer(ABC):
