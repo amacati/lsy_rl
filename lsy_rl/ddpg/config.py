@@ -61,8 +61,7 @@ class RolloutConfig:
 
     max_samples: int
     noise_cls: type[Noise] | str = NormalNoise
-    noise_kwargs: dict[str, Any] = field(
-        default_factory=lambda: {torch.tensor([0.0]), torch.tensor([0.1])})
+    noise_kwargs: dict[str, Any] = field(default_factory=lambda: {"mean": 0., "std": 0.1})
     action_clip_low: float = -1.0
     action_clip_high: float = 1.0
     replay_buffer_cls: type[ReplayBuffer] = SimpleReplayBuffer
@@ -97,8 +96,7 @@ class TrainConfig:
     policy_kwargs: dict[str, Any] = field(default_factory=dict)
     batch_size: int = 64
     action_noise_cls: type[Noise] | str = NormalNoise
-    action_noise_kwargs: dict[str, Any] = field(
-        default_factory=lambda: {torch.tensor([0.0]), torch.tensor([0.01])})
+    action_noise_kwargs: dict[str, Any] = field(default_factory=lambda: {"mean": 0., "std": 0.01})
     action_clip_low: float = -1.0
     action_clip_high: float = 1.0
     gamma: float = 0.99

@@ -15,19 +15,9 @@ def noise_cls(name: str) -> type[Noise]:
 
 class Noise(torch.nn.Module, ABC):
 
-    def __init__(self, device: torch.device = torch.device("cpu")):
+    def __init__(self,):
         super().__init__()
-        self._device = device
         self.params = nn.ParameterDict()
-
-    @property
-    def device(self):
-        return self._device
-
-    @device.setter
-    def device(self, device: torch.device):
-        self._device = device
-        self.params.to(device)
 
     def reset(self):
         ...
@@ -39,12 +29,15 @@ class Noise(torch.nn.Module, ABC):
 
 class UniformNoise(Noise):
 
-    def __init__(self, low: float, high: float, device: torch.device = torch.device("cpu")):
-        super().__init__(device=device)
+    def __init__(
+        self,
+        low: float,
+        high: float,
+    ):
+        super().__init__()
         assert isinstance(low, float) and isinstance(high, float), "low and high must be floats"
         self.params["low"] = nn.Parameter(torch.tensor(low), requires_grad=False)
         self.params["diff"] = nn.Parameter(torch.tensor(high - low), requires_grad=False)
-        self.params.to(device)
 
     def __call__(self, x: Tensor):
         assert isinstance(x, Tensor), "Input must be a Tensor"
@@ -53,8 +46,8 @@ class UniformNoise(Noise):
 
 class NormalNoise(Noise):
 
-    def __init__(self, mean: float, std: float, device: torch.device = torch.device("cpu")):
-        super().__init__(device=device)
+    def __init__(self, mean: float, std: float):
+        super().__init__()
         assert isinstance(mean, float) and isinstance(std, float), "mean and std must be floats"
         self.params["mean"] = nn.Parameter(torch.tensor(mean), requires_grad=False)
         self.params["std"] = nn.Parameter(torch.tensor(std), requires_grad=False)
@@ -65,13 +58,26 @@ class NormalNoise(Noise):
         return x
 
 
+class EpsilonNoise(Noise):
+
+    def __init__(self, noise: Noise, epsilon: float):
+        super().__init__()
+        assert isinstance(noise, Noise), "noise must be a Noise object"
+        assert isinstance(epsilon, float), "epsilon must be a float"
+        self.params["noise"] = noise
+        self.params["epsilon"] = nn.Parameter(torch.tensor(epsilon), requires_grad=False)
+
+    def __call__(self, x: Tensor):
+        choice = torch.rand(x.shape[0], device=x.device) < self.params["epsilon"]
+        return torch.where(choice[:, None], self.params["noise"](x), 0)
+
+
 class HybridNoise(Noise):
 
-    def __init__(self, noise: list[Noise], prob: Tensor,
-                 device: torch.device = torch.device("cpu")):
+    def __init__(self, noise: list[Noise], prob: Tensor):
         """Sample noise from a list of noise with given probability."""
-        super().__init__(device=device)
-        prob = torch.tensor(prob, device=device, dtype=torch.float32)
+        super().__init__()
+        prob = torch.tensor(prob, dtype=torch.float32)
         assert len(noise) == len(prob), "noise and prob must have the same length"
         assert all(isinstance(n, Noise) for n in noise), "noise must be a list of Noise objects"
         assert all(n.shape == noise[0].shape for n in noise), "all noise must have the same shape"
@@ -79,7 +85,6 @@ class HybridNoise(Noise):
         self.params["noise"] = nn.ModuleList(noise)
         self.params["prob"] = nn.Parameter(prob, requires_grad=False)
         self.shape = noise[0].shape
-        self.device = device  # Update device of all parameters
 
     def __call__(self):
         return self.params["noise"][torch.multinomial(self.params["prob"], 1)]()
