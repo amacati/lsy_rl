@@ -254,7 +254,7 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
                                             dtype=int,
                                             device=self.device)
         self._remaining_steps[:] = -1
-        self._running_steps = torch.zeros((num_envs,), dtype=int, device=self.device)
+        self._running_steps = torch.zeros(num_envs, dtype=int, device=self.device)
         self._invalid_idx = torch.zeros((num_envs, 2), dtype=int, device=self.device)
         self._invalid_idx[:, 1] = self.bufflen - 1
 
@@ -263,7 +263,6 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
 
         If the buffer is full, overwrite the oldest samples.
         """
-        # ToDo: Clean up this function, it's a mess right now
         self._allocate_buffers(sample)
         # A sample must contain exactly one sample per vector entry
         v_idx = self._default_v_idx
@@ -271,26 +270,23 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
         assert sample.batch_size[0] == v_idx.shape[0], "Sample size must match the env index"
         # +1 because we overwrite to 0 inclusive
         overwrite_len = self._remaining_steps[v_idx, (idx + 1) % self.bufflen] + 1
-        for i, l in enumerate(overwrite_len):
-            if l:
-                ep_idx = (torch.arange(l, device=self.device) + idx + 1) % self.bufflen
-                self._remaining_steps[i, ep_idx] = -1
-                self._invalid_idx[i, 0] = (idx + 1) % self.bufflen
-                self._invalid_idx[i, 1] = (ep_idx[-1] + 1) % self.bufflen
+        for i in torch.nonzero(overwrite_len).flatten():
+            ep_idx = (torch.arange(overwrite_len[i], device=self.device) + idx + 1) % self.bufflen
+            self._remaining_steps[i, ep_idx] = -1
+            self._invalid_idx[i, 0] = (idx + 1) % self.bufflen
+            self._invalid_idx[i, 1] = (ep_idx[-1] + 1) % self.bufflen
         self._running_steps += 1
-        done = sample["terminated"] | sample["truncated"]
+        done = (sample["terminated"] | sample["truncated"]).squeeze()  # Remove batch dimension
         # If the episode is done, we need to update the remaining steps to the end of the episode
         # for the current and all previous samples
-        for i, d in enumerate(done):
-            if d:
-                # +1 because we overwrite to 0 inclusive
-                ep_idx = (torch.arange(-self._running_steps[i] + 1, 1, device=self.device) +
-                          idx) % self.bufflen
-                self._remaining_steps[i, ep_idx] = torch.arange(self._running_steps[i] - 1,
-                                                                -1,
-                                                                -1,
-                                                                device=self.device)
-                self._invalid_idx[i, 0] = (ep_idx[-1] + 1) % self.bufflen
+        for i in torch.nonzero(done).flatten():
+            # +1 because we overwrite to 0 inclusive
+            ep_idx = (torch.arange(-self._running_steps[i] + 1, 1, device=self.device) +
+                      idx) % self.bufflen
+            # Create a descending range of remaining steps to the end of the episode
+            steps = torch.arange(self._running_steps[i] - 1, -1, -1, device=self.device)
+            self._remaining_steps[i, ep_idx] = steps
+            self._invalid_idx[i, 0] = (ep_idx[-1] + 1) % self.bufflen
         self._running_steps[done] = 0
         self.buffer[v_idx, idx] = sample
         # Update the helper indices
@@ -299,14 +295,6 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
 
     def sample(self, batch_size: int) -> TensorDict[torch.Tensor]:
         """Sample a batch of hindsight experience transitions from the buffer.
-
-        Todo:
-            * Add episode validation to the buffer. Currently, we assume that the buffer is sampled
-                when all episodes are done, and that all episodes truncate at the same time.
-            * Handle next_obs and next_achieved_goal. Currently, we use the next achieved goal
-                independent of episode termination. This is not correct. We should also store the
-                achieved goal for the last step of the episode and use it as the next goal for the
-                resampled goals.
         
         Args:
             batch_size: The batch size.
@@ -315,20 +303,27 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
         # Hindsight sample selection:
         # We need to sample from the valid indices. We track the invalid indices in the buffer with
         # the _invalid_idx helper. To sample only valid indices, we take the following steps:
+        #
         # 1.) Randomly sample a vector index
+        #
         # 2.) Compute the number of invalid samples per vector entry
         # a.) If the invalid index wraps around the buffer, we need to sum the samples from the end
         #     of the buffer with those from the beginning.
         # b.) If the invalid index does not wrap around the buffer, we can simply subtract the end
         #     index from the start index.
+        #
         # 3.) Sample random integers from the range [0, maxidx + 1 - n_invalid). We then offset the
         #     sampled indices by the end index of the invalid index modulo  the maximum index.
+        #
         # 4.) Clone the batch to prevent the overwriting of the original data
+        #
         # 5.) Sample HER indices where we replace the goal with a virtual goal from the same
         #     trajectory
+        #
         # 6.) Compute a random offset to a future sample of the same trajectory for the HER samples.
         #     We track the remaining steps to the end of the episode for each sample and use this
         #     information to randomly offset the HER samples within the same trajectory.
+        #
         # 7.) Set the desired goal of the HER samples to the virtual goal and recalculate the reward
         v_idx = torch.randint(self.num_envs, size=(batch_size,), device=self.device)
         invalid_idx = self._invalid_idx[v_idx]

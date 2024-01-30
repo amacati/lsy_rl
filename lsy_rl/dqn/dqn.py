@@ -40,14 +40,14 @@ class DQN(Algorithm):
         obs_shape, _ = space_info(env, mode="obs")
         self.num_actions = self.env.action_space.nvec[0]
         self.config.train.net_kwargs |= {"obs_dim": obs_shape[0], "action_dim": self.num_actions}
-        network = self.config.train.net_class(**self.config.train.net_kwargs)
+        network = self.config.train.net_cls(**self.config.train.net_kwargs)
         self.config.train.policy_kwargs["network"] = network
         self.policy = DQNPolicy(**self.config.train.policy_kwargs, device=self.config.train.device)
         # Initialize the optimizers
         self.optimizer = torch.optim.AdamW(self.policy.dqn.parameters(), lr=self.config.train.lr)
         # Initialize the replay buffer
         self.config.rollout.replay_buffer_kwargs |= {"env": env, "device": self.config.train.device}
-        buffer_cls = self.config.rollout.replay_buffer_class
+        buffer_cls = self.config.rollout.replay_buffer_cls
         self.buffer = buffer_cls(**self.config.rollout.replay_buffer_kwargs)
 
         # Save rollout, train, eval and checkpoint info into separate dictionaries

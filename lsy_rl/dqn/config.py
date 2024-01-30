@@ -30,7 +30,7 @@ class EnvConfig:
 class RolloutConfig:
 
     max_samples: int
-    replay_buffer_class: type[ReplayBuffer] = SimpleReplayBuffer
+    replay_buffer_cls: type[ReplayBuffer] = SimpleReplayBuffer
     replay_buffer_kwargs: dict[str, Any] = field(default_factory={"maxsize": 1_000_000})
     epsilon: float = 0.05
 
@@ -40,7 +40,7 @@ class TrainConfig:
 
     freq: int
     lr: float = 1e-4
-    net_class: type[DQNet] = DoubleDQNet
+    net_cls: type[DQNet] = DoubleDQNet
     net_kwargs: dict[str, Any] = field(default_factory=dict)
     policy_kwargs: dict[str, Any] = field(default_factory=dict)
     gradient_steps: int = 1

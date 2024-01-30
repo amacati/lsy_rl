@@ -1,8 +1,16 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+import sys
+from typing import Iterable
 
 import torch
 from torch import Tensor
 import torch.nn as nn
+
+
+def noise_cls(name: str) -> type[Noise]:
+    return getattr(sys.modules[__name__], name)
 
 
 class Noise(torch.nn.Module, ABC):
@@ -25,35 +33,35 @@ class Noise(torch.nn.Module, ABC):
         ...
 
     @abstractmethod
-    def __call__(self):
+    def __call__(self, x: Tensor) -> Tensor:
         ...
 
 
 class UniformNoise(Noise):
 
-    def __init__(self, low: Tensor, high: Tensor, device: torch.device = torch.device("cpu")):
-        super().__init__()
-        assert low.shape == high.shape, "low and high must have the same shape"
-        self.params["low"] = nn.Parameter(low, requires_grad=False)
-        self.params["diff"] = nn.Parameter(high - low, requires_grad=False)
+    def __init__(self, low: float, high: float, device: torch.device = torch.device("cpu")):
+        super().__init__(device=device)
+        assert isinstance(low, float) and isinstance(high, float), "low and high must be floats"
+        self.params["low"] = nn.Parameter(torch.tensor(low), requires_grad=False)
+        self.params["diff"] = nn.Parameter(torch.tensor(high - low), requires_grad=False)
         self.params.to(device)
-        self.shape = low.shape
 
-    def __call__(self):
-        return torch.rand(self.shape) * self.params["diff"] + self.params["low"]
+    def __call__(self, x: Tensor):
+        assert isinstance(x, Tensor), "Input must be a Tensor"
+        return torch.rand(x.shape, device=x.device) * self.params["diff"] + self.params["low"]
 
 
 class NormalNoise(Noise):
 
-    def __init__(self, mean: Tensor, std: Tensor, device: torch.device = torch.device("cpu")):
-        super().__init__()
-        self.params["mean"] = nn.Parameter(mean, requires_grad=False)
-        self.params["std"] = nn.Parameter(std, requires_grad=False)
-        assert mean.shape == std.shape, "mean and std must have the same shape"
-        self.shape = self.params["mean"].shape
+    def __init__(self, mean: float, std: float, device: torch.device = torch.device("cpu")):
+        super().__init__(device=device)
+        assert isinstance(mean, float) and isinstance(std, float), "mean and std must be floats"
+        self.params["mean"] = nn.Parameter(torch.tensor(mean), requires_grad=False)
+        self.params["std"] = nn.Parameter(torch.tensor(std), requires_grad=False)
 
-    def __call__(self):
-        x = torch.randn(self.shape, device=self.device) * self.params["std"] + self.params["mean"]
+    def __call__(self, x: Tensor):
+        assert isinstance(x, Tensor), "Input must be a Tensor"
+        x = torch.randn(x.shape, device=x.device) * self.params["std"] + self.params["mean"]
         return x
 
 
@@ -63,6 +71,7 @@ class HybridNoise(Noise):
                  device: torch.device = torch.device("cpu")):
         """Sample noise from a list of noise with given probability."""
         super().__init__(device=device)
+        prob = torch.tensor(prob, device=device, dtype=torch.float32)
         assert len(noise) == len(prob), "noise and prob must have the same length"
         assert all(isinstance(n, Noise) for n in noise), "noise must be a list of Noise objects"
         assert all(n.shape == noise[0].shape for n in noise), "all noise must have the same shape"

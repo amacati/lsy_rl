@@ -12,6 +12,7 @@ from lsy_rl.wrappers.tensordict_wrapper import TensorDictWrapper
 from lsy_rl.ddpg.config import DDPGConfig, EnvConfig, TrainConfig, EvalConfig, CheckpointConfig
 from lsy_rl.ddpg.config import RolloutConfig
 from lsy_rl.ddpg.policy import DDPGPolicy
+from lsy_rl.core.noise import Noise
 
 logger = logging.getLogger(__name__)
 
@@ -25,42 +26,45 @@ class DDPG(Algorithm):
                  logger: Logger = EmptyLogger()):
         super().__init__()
         assert hasattr(env, "num_envs"), "The environment must have a 'num_envs' attribute."
-        self.config = self._parse_config(config)
+        self.cfg = self._parse_config(config)
 
         # Create wrapped environments so that the observations and actions are always Tensors
-        self.env = TensorDictWrapper(env, device=self.config.train.device)
-        self.eval_env = TensorDictWrapper(eval_env, device=self.config.train.device)
+        self.env = TensorDictWrapper(env, device=self.cfg.train.device)
+        self.eval_env = TensorDictWrapper(eval_env, device=self.cfg.train.device)
         self.separate_eval_env = eval_env is not env
         self.logger = logger
 
         # Initialize the policy with actor and critic networks
         spaces = {"obs_space": env.observation_space, "action_space": env.action_space}
-        self.config.train.actor_kwargs |= spaces
-        actor = self.config.train.actor_class(**self.config.train.actor_kwargs)
-        self.config.train.policy_kwargs["actor"] = actor
-        self.config.train.critic_kwargs |= spaces
-        critic = self.config.train.critic_class(**self.config.train.critic_kwargs)
-        self.config.train.policy_kwargs["critic"] = critic
-        self.policy = DDPGPolicy(**self.config.train.policy_kwargs, device=self.config.train.device)
+        self.cfg.train.actor_kwargs |= spaces
+        actor = self.cfg.train.actor_cls(**self.cfg.train.actor_kwargs)
+        self.cfg.train.policy_kwargs["actor"] = actor
+        self.cfg.train.critic_kwargs |= spaces
+        critic = self.cfg.train.critic_cls(**self.cfg.train.critic_kwargs)
+        self.cfg.train.policy_kwargs["critic"] = critic
+        self.policy = DDPGPolicy(**self.cfg.train.policy_kwargs, device=self.cfg.train.device)
         # Initialize the optimizers
         self.actor_optimizer = torch.optim.AdamW(self.policy.actor.parameters(),
-                                                 lr=self.config.train.actor_lr)
+                                                 lr=self.cfg.train.actor_lr)
         self.critic_optimizer = torch.optim.AdamW(self.policy.critic.parameters(),
-                                                  lr=self.config.train.critic_lr)
+                                                  lr=self.cfg.train.critic_lr)
+        # Initialize exploration noise
+        self.noise: Noise = self.cfg.rollout.noise_cls(**self.cfg.rollout.noise_kwargs)
+        self.train_noise = self.cfg.train.action_noise_cls(**self.cfg.train.action_noise_kwargs)
         # Initialize the replay buffer
-        self.config.rollout.replay_buffer_kwargs |= {
+        self.cfg.rollout.replay_buffer_kwargs |= {
             "num_envs": self.env.num_envs,
-            "device": self.config.train.device
+            "device": self.cfg.train.device
         }
-        buffer_cls = self.config.rollout.replay_buffer_class
-        self.buffer = buffer_cls(**self.config.rollout.replay_buffer_kwargs)
+        buffer_cls = self.cfg.rollout.replay_buffer_cls
+        self.buffer = buffer_cls(**self.cfg.rollout.replay_buffer_kwargs)
 
         # Save rollout, train, eval and checkpoint info into separate dictionaries
         self.rollout_info = {
             "num_samples": 0,
-            "rewards": torch.zeros(self.env.num_envs, device=self.config.train.device),
-            "steps": torch.zeros(self.env.num_envs, device=self.config.train.device),
-            "log_freq": self.config.rollout.max_samples // 100,
+            "rewards": torch.zeros(self.env.num_envs, device=self.cfg.train.device),
+            "steps": torch.zeros(self.env.num_envs, device=self.cfg.train.device),
+            "log_freq": max(1, self.cfg.rollout.max_samples // 100),
             "log": {
                 "ep_steps": 0,
                 "ep_reward": 0,
@@ -77,43 +81,44 @@ class DDPG(Algorithm):
                 "critic_steps_since_log": 0
             }
         }
-        num_trainings = (self.config.rollout.max_samples // self.config.train.train_freq)
-        total_train_steps = num_trainings * self.config.train.train_steps
+        num_trainings = (self.cfg.rollout.max_samples // self.cfg.train.freq)
+        total_train_steps = num_trainings * self.cfg.train.steps
         self.train_info["log_freq"] = max(1, total_train_steps // 100)  # Log 100 training steps
         self.eval_info = {
             "num_samples": 0,
-            "rewards": torch.zeros(self.env.num_envs, device=self.config.train.device),
-            "steps": torch.zeros(self.env.num_envs, device=self.config.train.device),
+            "rewards": torch.zeros(self.env.num_envs, device=self.cfg.train.device),
+            "steps": torch.zeros(self.env.num_envs, device=self.cfg.train.device),
         }
         self.checkpoint_info = {"num_samples": 0}
 
     @property
     def stop_condition(self):
-        max_samples = self.rollout_info["num_samples"] >= self.config.rollout.max_samples
+        max_samples = self.rollout_info["num_samples"] >= self.cfg.rollout.max_samples
         return max_samples
 
     @property
     def train_condition(self):
-        if self.rollout_info["num_samples"] < self.config.train.batch_size:
+        if self.rollout_info["num_samples"] < self.cfg.train.batch_size:
             return False  # Make sure we have enough samples for a batch
         num_samples = self.rollout_info["num_samples"] - self.train_info["num_samples"]
-        if num_samples >= self.config.train.train_freq:
+        if num_samples >= self.cfg.train.freq:
             return True
         return False
 
     @property
     def eval_condition(self):
         num_samples = self.rollout_info["num_samples"] - self.eval_info["num_samples"]
-        return num_samples >= self.config.eval.freq
+        return num_samples >= self.cfg.eval.freq
 
     @property
     def checkpoint_condition(self):
-        if self.config.checkpoint.freq is None:
+        if self.cfg.checkpoint.freq is None:
             return False
         num_samples = self.rollout_info["num_samples"] - self.checkpoint_info["num_samples"]
-        return num_samples >= self.config.checkpoint.freq
+        return num_samples >= self.cfg.checkpoint.freq
 
     def train(self):
+        self.evaluate_policy()  # Establish an initial baseline
         while not self.stop_condition:
             self.collect_samples()
             if self.train_condition:
@@ -122,7 +127,8 @@ class DDPG(Algorithm):
                 self.evaluate_policy()
             if self.checkpoint_condition:
                 self.save_checkpoint()
-        self.save_checkpoint()
+        if self.cfg.checkpoint.path is not None:
+            self.save_checkpoint()  # Save the final checkpoint even if we don't reach the freq
         self.logger.stop()
 
     @torch.no_grad()
@@ -138,8 +144,8 @@ class DDPG(Algorithm):
         required_samples = self.rollout_info["num_samples"] + self._next_required_samples()
         while self.rollout_info["num_samples"] < required_samples:
             action = self.policy.actor(obs)
-            action = action + torch.randn_like(action) * self.config.rollout.action_noise
-            action = torch.clamp(action, -1, 1)
+            action = torch.clamp(action + self.noise(action), self.cfg.rollout.action_clip_low,
+                                 self.cfg.rollout.action_clip_high)
             sample = self.env.step(action)
             sample["obs"], sample["action"] = obs, action
             self.buffer.add(sample)
@@ -165,13 +171,13 @@ class DDPG(Algorithm):
     def train_policy(self):
         self.policy.actor.train()  # Critic is always in train mode, not used for inference
 
-        for _ in range(self.config.train.train_steps):
+        for _ in range(self.cfg.train.steps):
             # Update 'num_train_steps' at the beginning of the loop so that lower frequency updates
             # do not get executed at the first iteration when 'num_train_steps' is 0
             self.train_info["num_train_steps"] += 1
 
-            if self.train_info["num_train_steps"] % self.config.train.critic_freq == 0:
-                batch = self.buffer.sample(self.config.train.batch_size)
+            if self.train_info["num_train_steps"] % self.cfg.train.critic_freq == 0:
+                batch = self.buffer.sample(self.cfg.train.batch_size)
                 # Compute the expected Q values with the reward and the target networks
                 with torch.no_grad():
                     next_action = self.policy.actor.target(batch["next_obs"])
@@ -180,12 +186,13 @@ class DDPG(Algorithm):
                     # broadcasting errors
                     reward = batch["reward"].reshape(-1, 1)
                     terminated = batch["terminated"].reshape(-1, 1)
-                    q_target = reward + (self.config.train.gamma * ~terminated * next_q_target)
-                    # TODO: include reward clipping?
+                    q_target = reward + (self.cfg.train.gamma * ~terminated * next_q_target)
+                    q_target = torch.clamp(q_target, self.cfg.train.reward_clip_low,
+                                           self.cfg.train.reward_clip_high)
                 # Compute the loss as the MSE between the expected Q values and the Q values from
                 # the critic
                 q_expected = self.policy.critic(batch["obs"], batch["action"])
-                assert q_target.shape == (self.config.train.batch_size, 1), q_target.shape
+                assert q_target.shape == (self.cfg.train.batch_size, 1), q_target.shape
                 critic_loss = torch.mean((q_expected - q_target)**2)
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward()
@@ -193,13 +200,14 @@ class DDPG(Algorithm):
                 self.train_info["log"]["critic_loss"] += critic_loss.detach()
                 self.train_info["log"]["critic_steps_since_log"] += 1
 
-            if self.train_info["num_train_steps"] % self.config.train.actor_freq == 0:
-                batch = self.buffer.sample(self.config.train.batch_size)
+            if self.train_info["num_train_steps"] % self.cfg.train.actor_freq == 0:
+                batch = self.buffer.sample(self.cfg.train.batch_size)
                 # Compute the actions for the sample observations, compute the critic value of the
                 # observations and actions and compute the actor loss by maximizing the critic value
                 train_action = self.policy.actor(batch["obs"])
-                action_noise = torch.randn_like(train_action) * self.config.train.action_noise
-                train_action = torch.clamp(train_action + action_noise, -1, 1)
+                train_action = torch.clamp(train_action + self.train_noise(train_action),
+                                           self.cfg.train.action_clip_low,
+                                           self.cfg.train.action_clip_high)
                 actor_loss = -self.policy.critic(batch["obs"], train_action).mean()
 
                 self.actor_optimizer.zero_grad()
@@ -210,10 +218,10 @@ class DDPG(Algorithm):
 
             self._rate_limit_train_log()
             # Update the target networks
-            if self.train_info["num_train_steps"] % self.config.train.actor_target_freq == 0:
-                self.policy.actor.update_target(self.config.train.tau)
-            if self.train_info["num_train_steps"] % self.config.train.critic_target_freq == 0:
-                self.policy.critic.update_target(self.config.train.tau)
+            if self.train_info["num_train_steps"] % self.cfg.train.actor_target_freq == 0:
+                self.policy.actor.update_target(self.cfg.train.tau)
+            if self.train_info["num_train_steps"] % self.cfg.train.critic_target_freq == 0:
+                self.policy.critic.update_target(self.cfg.train.tau)
 
         self._update_train_info()
 
@@ -223,7 +231,7 @@ class DDPG(Algorithm):
         obs = self.eval_env.reset()["obs"]
         num_samples = 0
         rewards, ep_rewards, ep_steps = [], [], []
-        while num_samples < self.config.eval.steps:
+        while num_samples < self.cfg.eval.steps:
             action = self.policy.action(obs)
             sample = self.eval_env.step(action)
             obs = sample["next_obs"]
@@ -254,33 +262,33 @@ class DDPG(Algorithm):
         self.policy.actor.train()
 
     def save_checkpoint(self):
-        assert self.config.checkpoint.path.is_dir(), "The checkpoint path must be a directory."
-        self.policy.save(self.config.checkpoint.path / "policy.pt")
-        self.buffer.save(self.config.checkpoint.path / "buffer.pt")
+        assert self.cfg.checkpoint.path.is_dir(), "The checkpoint path must be a directory."
+        self.policy.save(self.cfg.checkpoint.path / "policy.pt")
+        self.buffer.save(self.cfg.checkpoint.path / "buffer.pt")
         self.checkpoint_info["num_samples"] = self.rollout_info["num_samples"]
 
     def _next_required_samples(self):
         # Calculate required samples for next training step
         current_samples = self.rollout_info["num_samples"] - self.train_info["num_samples"]
-        train_samples = self.config.train.train_freq - current_samples
+        train_samples = self.cfg.train.freq - current_samples
         # Check if we have enough samples for a batch. If not, collect as many samples as required
         # to fill a batch
-        if self.rollout_info["num_samples"] - self.config.train.batch_size < 0:
-            if train_samples < self.config.train.batch_size - self.rollout_info["num_samples"]:
-                train_samples = self.config.train.batch_size - self.rollout_info["num_samples"]
+        if self.rollout_info["num_samples"] - self.cfg.train.batch_size < 0:
+            if train_samples < self.cfg.train.batch_size - self.rollout_info["num_samples"]:
+                train_samples = self.cfg.train.batch_size - self.rollout_info["num_samples"]
         if train_samples == 0:
-            train_samples = self.config.train.train_freq
+            train_samples = self.cfg.train.freq
 
         # Calculate required samples for next eval step
         current_samples = self.rollout_info["num_samples"] - self.eval_info["num_samples"]
-        eval_samples = self.config.eval.freq - current_samples
-        eval_samples = eval_samples if eval_samples > 0 else self.config.eval.freq
+        eval_samples = self.cfg.eval.freq - current_samples
+        eval_samples = eval_samples if eval_samples > 0 else self.cfg.eval.freq
         # Calculate required samples for next checkpoint
-        if self.config.checkpoint.freq is None:
+        if self.cfg.checkpoint.freq is None:
             checkpoint_samples = np.inf
         else:
             current_samples = self.rollout_info["num_samples"] - self.checkpoint_info["num_samples"]
-            checkpoint_samples = self.config.checkpoint.freq - current_samples
+            checkpoint_samples = self.cfg.checkpoint.freq - current_samples
         return min([train_samples, eval_samples, checkpoint_samples])
 
     def _rate_limit_rollout_log(self):
@@ -333,15 +341,8 @@ class DDPG(Algorithm):
         checkpoint_config = CheckpointConfig(**vars(config.checkpoint))
 
         # Check if the config is valid
-        # TODO: Check if we can move this to the config class
-        if not train_config.train_freq % env_config.kwargs["num_envs"] == 0:
-            raise ValueError((f"The 'train_freq' ({train_config.train_freq}) must be divisible by "
-                              f"'num_envs' ({env_config.kwargs['num_envs']})."))
-        if not eval_config.freq % env_config.kwargs["num_envs"] == 0:
-            raise ValueError((f"The 'eval_freq' ({eval_config.freq}) must be divisible by "
-                              f"'num_envs' ({env_config.kwargs['num_envs']})."))
-        if checkpoint_config.freq is not None:
-            if not checkpoint_config.freq % env_config.kwargs["num_envs"] == 0:
-                raise ValueError((f"The 'checkpoint_freq' ({checkpoint_config.freq}) must be "
-                                  f"divisible by 'num_envs' ({env_config.kwargs['num_envs']})."))
+        for cfg in (train_config, eval_config, checkpoint_config):
+            if cfg.freq is not None and cfg.freq % env_config.kwargs["num_envs"] != 0:
+                raise ValueError(f"Config {cfg} frequency ({cfg.freq}) must be multiple of "
+                                 f"'num_envs' ({env_config.kwargs['num_envs']}).")
         return DDPGConfig(env_config, rollout_config, train_config, eval_config, checkpoint_config)

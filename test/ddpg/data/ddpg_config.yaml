@@ -11,7 +11,7 @@ rollout:
 
 train:
   value:
-    gradient_steps:
+    steps:
       value: 2
     batch_size:
       value: 2
@@ -26,4 +26,4 @@ eval:
 checkpoint:
   value:
     freq:
-      value: 100
+      value: null
