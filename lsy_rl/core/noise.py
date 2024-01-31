@@ -94,5 +94,9 @@ class HybridNoise(Noise):
         self.params["noise"] = nn.ModuleList(noise)
         self.params["prob"] = nn.Parameter(prob, requires_grad=False)
 
-    def __call__(self):
-        return self.params["noise"][torch.multinomial(self.params["prob"], 1)]()
+    def __call__(self, x: Tensor):
+        noise_idx = torch.multinomial(self.params["prob"], x.shape[0], replacement=True)
+        noise = torch.zeros_like(x)
+        for i, noise_idx in enumerate(noise_idx):
+            noise[i] = self.params["noise"][noise_idx](x[i])
+        return noise

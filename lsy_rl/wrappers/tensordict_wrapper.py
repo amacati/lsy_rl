@@ -1,33 +1,24 @@
 from typing import Any, Callable
+import logging
 
 from gymnasium import Env
+from gymnasium import Wrapper
 from tensordict import TensorDict
 
 import torch
 from torch import Tensor
 import numpy as np
 
-from lsy_rl.wrappers.orbit_wrapper import OrbitWrapper
+logger = logging.getLogger(__name__)
 
 
-def TensorDictWrapper(env: Env,
-                      device: torch.device = torch.device("cpu"),
-                      info_keys: list[str] = []) -> Env:
-    """Determine the type of the environment and dispatch to the appropriate TensorDictWrapper.
+class TensorDictWrapper(Wrapper):
 
-    Some environments expect numpy arrays as input, others expect Tensors. If Tensors are
-    expected, we ensure that they are on the correct device to avoid unnecessary data transfers.
-    """
-    try:
-        from omni.isaac.orbit.envs import RLTaskEnv
-        if isinstance(env.unwrapped, RLTaskEnv):
-            return OrbitWrapper(env, device=device)
-    except ImportError:  # IsaacSim is not installed or not open
-        pass
-    return DefaultTensorDictWrapper(env, device=device, info_keys=info_keys)
+    def __init__(self, env: Env):
+        super().__init__(env)
 
 
-class DefaultTensorDictWrapper(Env):
+class DefaultTensorDictWrapper(TensorDictWrapper):
     """A wrapper that converts the actions and observations to Tensors.
 
     If the environment expects numpy arrays, actions are converted to numpy arrays before being
@@ -36,15 +27,19 @@ class DefaultTensorDictWrapper(Env):
     wrapper is a no-op. Observations are always converted to Tensors on the training device.
     """
 
-    def __init__(self,
-                 env: Env,
-                 device: torch.device = torch.device("cpu"),
-                 info_keys: list[str] = []):
-        super().__init__()
+    def __init__(self, env: Env, device: torch.device = torch.device("cpu")):
+        super().__init__(env)
         self.env = env
-        # Only keep wanted keys in infodict to prevent undesired memory usage or Tensor conversion
-        # errors, e.g. when trying to convert numpy object array
-        self.info_keys = info_keys
+        self.observation_space = env.observation_space
+        self.action_space = env.action_space
+
+        self.num_envs = env.num_envs
+        self.device = device
+
+        self.observation_space.sample = self._patch_space(self.env.observation_space.sample)
+        self.action_space.sample = self._patch_space(self.env.action_space.sample)
+
+        self._use_info = True
 
         # Infer the device of the environment. If the environment action space is a numpy array,
         # we need to convert the step() action to a numpy array before passing it to the
@@ -55,18 +50,20 @@ class DefaultTensorDictWrapper(Env):
         self.observation_space = env.observation_space
         self.action_space = env.action_space
         self.num_envs = env.num_envs
-        self.device = device
         if self.env_mode == "np":  # Patch the sample() methods to return Tensors on the device
             self.observation_space.sample = self._patch_space(self.env.observation_space.sample)
             self.action_space.sample = self._patch_space(self.env.action_space.sample)
 
     def step(self, action: Tensor) -> TensorDict[str, Tensor]:
         sample = TensorDict({"action": action}, batch_size=self.num_envs, device=self.device)
-        action = self._convert_action(action)  # Convert to np if necessary or send to env_device
+        action = self.transform_action(action)  # Convert to np if necessary or send to env_device
         next_obs, reward, terminated, truncated, info = self.env.step(action)
-        if self.info_keys:
-            info = {key: value for key, value in info.items() if key in self.info_keys}
-            sample["info"] = TensorDict(info, batch_size=self.num_envs, device=self.device)
+        if self._use_info:  # If info has failed once, we disable it for the rest of the run
+            try:
+                sample["info"] = TensorDict(info, batch_size=self.num_envs, device=self.device)
+            except RuntimeError:
+                logger.warning("Failed to convert info to TensorDict. Disabling info.")
+                self._use_info = False
         sample["next_obs"] = self.transform_obs(next_obs)
         sample["reward"] = torch.as_tensor(reward)
         sample["terminated"] = torch.as_tensor(terminated)
@@ -79,9 +76,12 @@ class DefaultTensorDictWrapper(Env):
               options: dict[str, Any] | None = None) -> tuple[Tensor, dict[str, Any]]:
         obs, info = self.env.reset(seed=seed, options=options)
         sample = TensorDict({}, batch_size=self.num_envs, device=self.device)
-        if self.info_keys:
-            info = {key: value for key, value in info.items() if key in self.info_keys}
-            sample["info"] = TensorDict(info, batch_size=self.num_envs, device=self.device)
+        if self._use_info:
+            try:
+                sample["info"] = TensorDict(info, batch_size=self.num_envs, device=self.device)
+            except RuntimeError:
+                logger.warning("Failed to convert info to TensorDict. Disabling info.")
+                self._use_info = False
         sample["obs"] = self.transform_obs(obs)
         return sample
 
@@ -96,13 +96,7 @@ class DefaultTensorDictWrapper(Env):
             case _:
                 raise TypeError(f"Unsupported type {type(obs)}")
 
-    def render(self):
-        self.env.render()
-
-    def close(self):
-        self.env.close()
-
-    def _convert_action(self, action: Tensor) -> Tensor | np.ndarray:
+    def transform_action(self, action: Tensor) -> Tensor | np.ndarray:
         if self.env_mode == "np":
             return action.cpu().numpy()
         return action.to(self.env_device)

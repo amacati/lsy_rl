@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from numbers import Number
 import sys
+from typing import Any, Iterable
 
 import torch
 import torch.nn as nn
@@ -26,7 +27,7 @@ class Transform(nn.Module):
     def reset(self):
         ...
 
-    def __call__(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, *args) -> tuple[Tensor, Any]:
         ...
 
 
@@ -35,14 +36,16 @@ class ChainedTF(Transform):
     def __init__(self, transforms: list[Transform]):
         super().__init__()
         assert all(isinstance(x, Transform) for x in transforms), "All elements must be Transforms"
-        self.params["transforms"] = nn.Sequential(*transforms)
+        self.params["transforms"] = nn.ModuleList(transforms)
 
     def reset(self):
         for transform in self.params["transforms"]:
             transform.reset()
 
-    def __call__(self, x: Tensor) -> Tensor:
-        return self.params["transforms"](x)
+    def forward(self, x: Tensor, *args) -> Tensor:
+        for transform in self.params["transforms"]:
+            x, args = transform(x, *args)
+        return x, args
 
 
 class IdentityTF(Transform):
@@ -50,8 +53,8 @@ class IdentityTF(Transform):
     def __init__(self):
         super().__init__()
 
-    def __call__(self, x: Tensor) -> Tensor:
-        return x
+    def forward(self, x: Tensor, *args) -> Tensor:
+        return x, args
 
 
 class ClipTF(Transform):
@@ -64,9 +67,9 @@ class ClipTF(Transform):
         self.params["max"] = nn.Parameter(torch.tensor(max, dtype=torch.float32),
                                           requires_grad=False)
 
-    def __call__(self, x: Tensor) -> Tensor:
-        assert isinstance(x, Tensor), "Input must be a Tensor"
-        return torch.clamp(x, self.params["min"], self.params["max"])
+    def forward(self, x: Tensor, *args) -> Tensor:
+        assert isinstance(x, Tensor), f"Input must be a Tensor, is {type(x)} {x}"
+        return torch.clamp(x, self.params["min"], self.params["max"]), args
 
 
 class AdditiveNoiseTF(Transform):
@@ -78,6 +81,18 @@ class AdditiveNoiseTF(Transform):
         assert isinstance(noise, Noise), "noise must be a Noise object"
         self.params["noise"] = noise
 
-    def __call__(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, *args) -> Tensor:
         assert isinstance(x, Tensor), "Input must be a Tensor"
-        return x + self.params["noise"](x)
+        return x + self.params["noise"](x), args
+
+
+class ScaleTF(Transform):
+
+    def __init__(self, scale: Number | Iterable[Number]):
+        super().__init__()
+        assert isinstance(scale, (Number, Iterable)), "scale must be a Number or Iterable"
+        self.params["scale"] = nn.Parameter(torch.tensor(scale), requires_grad=False)
+
+    def forward(self, x: Tensor, *args) -> Tensor:
+        assert isinstance(x, Tensor), "Input must be a Tensor"
+        return x * self.params["scale"], args

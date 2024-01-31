@@ -38,9 +38,9 @@ def required_args(cls: type) -> list[str]:
     return [p.name for p in inspect.signature(cls).parameters.values() if p.default == p.empty]
 
 
-def convert_transforms(transforms: list[Transform | dict] | None) -> Transform:
-    if transforms is None:
-        return IdentityTF()
+def convert_transforms(transforms: list[Transform | dict] | Transform) -> Transform:
+    if isinstance(transforms, Transform):
+        return transforms
     tfs = []
     for transform in transforms:
         if isinstance(transform, Transform):
@@ -74,7 +74,7 @@ class EnvConfig:
 class RolloutConfig:
 
     max_samples: int
-    action_transform: Transform = None
+    action_transform: Transform = field(default_factory=IdentityTF)
     replay_buffer_cls: type[ReplayBuffer] = SimpleReplayBuffer
     replay_buffer_kwargs: dict[str, Any] = field(default_factory=lambda: {
         "max_size": 1_000_000,
@@ -107,11 +107,12 @@ class TrainConfig:
     critic_kwargs: dict[str, Any] = field(default_factory=dict)
     policy_kwargs: dict[str, Any] = field(default_factory=dict)
     batch_size: int = 64
-    action_transform: Transform = None
+    action_transform: Transform = field(default_factory=IdentityTF)
+    target_action_transform: Transform = field(default_factory=IdentityTF)
     gamma: float = 0.99
     tau: float = 1e-3
-    reward_clip_low: float = -torch.inf
-    reward_clip_high: float = torch.inf
+    reward_clip: tuple[float, float] = (-torch.inf, torch.inf)
+    grad_clip: float = torch.inf
     device: torch.device = torch.device("cpu")
 
     def __post_init__(self):
@@ -120,6 +121,7 @@ class TrainConfig:
         self.critic_cls = maybe_str_to_cls(self.critic_cls, expected_type=torch.nn.Module)
         check_kwargs(self.critic_kwargs, self.critic_cls, ignore=["obs_space", "action_space"])
         self.action_transform = convert_transforms(self.action_transform)
+        self.target_action_transform = convert_transforms(self.target_action_transform)
 
 
 @dataclass
@@ -127,7 +129,7 @@ class EvalConfig:
 
     freq: int
     steps: int
-    action_transform: Transform = None
+    action_transform: Transform = field(default_factory=IdentityTF)
 
     def __post_init__(self):
         self.action_transform = convert_transforms(self.action_transform)
