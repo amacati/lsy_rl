@@ -9,7 +9,7 @@ import torch
 from typing import Any
 from lsy_rl.ddpg.policy import DDPGActor, DDPGCritic
 from lsy_rl.core.replay_buffer import ReplayBuffer, SimpleReplayBuffer, replay_buffer_cls
-from lsy_rl.core.noise import Noise, NormalNoise, noise_cls
+from lsy_rl.core.transforms import IdentityTF, Transform, ChainedTF, transform_cls
 
 T = TypeVar("T")
 
@@ -38,6 +38,20 @@ def required_args(cls: type) -> list[str]:
     return [p.name for p in inspect.signature(cls).parameters.values() if p.default == p.empty]
 
 
+def convert_transforms(transforms: list[Transform | dict] | None) -> Transform:
+    if transforms is None:
+        return IdentityTF()
+    tfs = []
+    for transform in transforms:
+        if isinstance(transform, Transform):
+            tfs.append(transform)
+            continue
+        assert isinstance(transform, dict)
+        tf_cls = maybe_str_to_cls(transform["type"], factory=transform_cls, expected_type=Transform)
+        tfs.append(tf_cls(**(transform.get("kwargs") or {})))
+    return ChainedTF(tfs)
+
+
 @dataclass
 class DDPGConfig:
 
@@ -60,10 +74,7 @@ class EnvConfig:
 class RolloutConfig:
 
     max_samples: int
-    noise_cls: type[Noise] | str = NormalNoise
-    noise_kwargs: dict[str, Any] = field(default_factory=lambda: {"mean": 0., "std": 0.1})
-    action_clip_low: float = -1.0
-    action_clip_high: float = 1.0
+    action_transform: Transform = None
     replay_buffer_cls: type[ReplayBuffer] = SimpleReplayBuffer
     replay_buffer_kwargs: dict[str, Any] = field(default_factory=lambda: {
         "max_size": 1_000_000,
@@ -73,9 +84,10 @@ class RolloutConfig:
     def __post_init__(self):
         self.replay_buffer_cls = maybe_str_to_cls(self.replay_buffer_cls, replay_buffer_cls,
                                                   ReplayBuffer)
-        check_kwargs(self.replay_buffer_kwargs, self.replay_buffer_cls)
-        self.noise_cls = maybe_str_to_cls(self.noise_cls, factory=noise_cls, expected_type=Noise)
-        check_kwargs(self.noise_kwargs, self.noise_cls)
+        check_kwargs(self.replay_buffer_kwargs,
+                     self.replay_buffer_cls,
+                     ignore=["num_envs", "device"])
+        self.action_transform = convert_transforms(self.action_transform)
 
 
 @dataclass
@@ -95,10 +107,7 @@ class TrainConfig:
     critic_kwargs: dict[str, Any] = field(default_factory=dict)
     policy_kwargs: dict[str, Any] = field(default_factory=dict)
     batch_size: int = 64
-    action_noise_cls: type[Noise] | str = NormalNoise
-    action_noise_kwargs: dict[str, Any] = field(default_factory=lambda: {"mean": 0., "std": 0.01})
-    action_clip_low: float = -1.0
-    action_clip_high: float = 1.0
+    action_transform: Transform = None
     gamma: float = 0.99
     tau: float = 1e-3
     reward_clip_low: float = -torch.inf
@@ -110,10 +119,7 @@ class TrainConfig:
         check_kwargs(self.actor_kwargs, self.actor_cls, ignore=["obs_space", "action_space"])
         self.critic_cls = maybe_str_to_cls(self.critic_cls, expected_type=torch.nn.Module)
         check_kwargs(self.critic_kwargs, self.critic_cls, ignore=["obs_space", "action_space"])
-        self.action_noise_cls = maybe_str_to_cls(self.action_noise_cls,
-                                                 factory=noise_cls,
-                                                 expected_type=Noise)
-        check_kwargs(self.action_noise_kwargs, self.action_noise_cls)
+        self.action_transform = convert_transforms(self.action_transform)
 
 
 @dataclass
@@ -121,6 +127,10 @@ class EvalConfig:
 
     freq: int
     steps: int
+    action_transform: Transform = None
+
+    def __post_init__(self):
+        self.action_transform = convert_transforms(self.action_transform)
 
 
 @dataclass

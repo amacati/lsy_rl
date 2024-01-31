@@ -1,7 +1,8 @@
 import logging
+from typing import Callable
 
 import numpy as np
-import gymnasium
+import sys
 import torch
 import torch.nn as nn
 
@@ -23,6 +24,14 @@ def polyak_update_(target_net: nn.Module, net: nn.Module, tau: float):
     assert 0.0 <= tau <= 1.0, "tau must be in [0, 1]"
     for target_param, param in zip(target_net.parameters(), net.parameters()):
         target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
+
+
+def module_type_from_string(module_name: str) -> Callable[[str], type]:
+
+    def _module_type_from_string(name: str) -> type:
+        return getattr(sys.modules[module_name], name)
+
+    return _module_type_from_string
 
 
 def torchify(x: np.ndarray, device: torch.device = torch.device("cpu")) -> torch.Tensor:

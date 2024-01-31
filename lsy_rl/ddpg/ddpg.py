@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 from types import SimpleNamespace
 
 import torch
@@ -12,7 +11,6 @@ from lsy_rl.wrappers.tensordict_wrapper import TensorDictWrapper
 from lsy_rl.ddpg.config import DDPGConfig, EnvConfig, TrainConfig, EvalConfig, CheckpointConfig
 from lsy_rl.ddpg.config import RolloutConfig
 from lsy_rl.ddpg.policy import DDPGPolicy
-from lsy_rl.core.noise import Noise
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +46,12 @@ class DDPG(Algorithm):
                                                  lr=self.cfg.train.actor_lr)
         self.critic_optimizer = torch.optim.AdamW(self.policy.critic.parameters(),
                                                   lr=self.cfg.train.critic_lr)
-        # Initialize exploration noise
-        self.noise: Noise = self.cfg.rollout.noise_cls(**self.cfg.rollout.noise_kwargs)
-        self.train_noise = self.cfg.train.action_noise_cls(**self.cfg.train.action_noise_kwargs)
+        # Put transforms on the same device as the policy
+        device = self.cfg.train.device
+        self.cfg.rollout.action_transform = self.cfg.rollout.action_transform.to(device)
+        self.cfg.train.action_transform = self.cfg.train.action_transform.to(device)
+        self.cfg.eval.action_transform = self.cfg.eval.action_transform.to(device)
+
         # Initialize the replay buffer
         self.cfg.rollout.replay_buffer_kwargs |= {
             "num_envs": self.env.num_envs,
@@ -144,8 +145,7 @@ class DDPG(Algorithm):
         required_samples = self.rollout_info["num_samples"] + self._next_required_samples()
         while self.rollout_info["num_samples"] < required_samples:
             action = self.policy.actor(obs)
-            action = torch.clamp(action + self.noise(action), self.cfg.rollout.action_clip_low,
-                                 self.cfg.rollout.action_clip_high)
+            action = self.cfg.rollout.action_transform(action)
             sample = self.env.step(action)
             sample["obs"], sample["action"] = obs, action
             self.buffer.add(sample)
@@ -205,9 +205,7 @@ class DDPG(Algorithm):
                 # Compute the actions for the sample observations, compute the critic value of the
                 # observations and actions and compute the actor loss by maximizing the critic value
                 train_action = self.policy.actor(batch["obs"])
-                train_action = torch.clamp(train_action + self.train_noise(train_action),
-                                           self.cfg.train.action_clip_low,
-                                           self.cfg.train.action_clip_high)
+                train_action = self.cfg.train.action_transform(train_action)
                 actor_loss = -self.policy.critic(batch["obs"], train_action).mean()
 
                 self.actor_optimizer.zero_grad()
@@ -233,6 +231,7 @@ class DDPG(Algorithm):
         rewards, ep_rewards, ep_steps = [], [], []
         while num_samples < self.cfg.eval.steps:
             action = self.policy.action(obs)
+            action = self.cfg.eval.action_transform(action)
             sample = self.eval_env.step(action)
             obs = sample["next_obs"]
             self.eval_info["rewards"] += sample["reward"]

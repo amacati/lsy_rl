@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-import sys
 from typing import Iterable
+from numbers import Number
 
 import torch
 from torch import Tensor
 import torch.nn as nn
 
+from lsy_rl.utils.utils import module_type_from_string
 
-def noise_cls(name: str) -> type[Noise]:
-    return getattr(sys.modules[__name__], name)
+noise_cls: type[Noise] = module_type_from_string(__name__)
 
 
 class Noise(torch.nn.Module, ABC):
@@ -29,26 +29,24 @@ class Noise(torch.nn.Module, ABC):
 
 class UniformNoise(Noise):
 
-    def __init__(
-        self,
-        low: float,
-        high: float,
-    ):
+    def __init__(self, min: Number, max: Number):
         super().__init__()
-        assert isinstance(low, float) and isinstance(high, float), "low and high must be floats"
-        self.params["low"] = nn.Parameter(torch.tensor(low), requires_grad=False)
-        self.params["diff"] = nn.Parameter(torch.tensor(high - low), requires_grad=False)
+        assert isinstance(min, Number) and isinstance(max, Number), "min and max must be floats"
+        self.params["min"] = nn.Parameter(torch.tensor(min, dtype=torch.float32),
+                                          requires_grad=False)
+        self.params["diff"] = nn.Parameter(torch.tensor(max - min, dtype=torch.float32),
+                                           requires_grad=False)
 
     def __call__(self, x: Tensor):
         assert isinstance(x, Tensor), "Input must be a Tensor"
-        return torch.rand(x.shape, device=x.device) * self.params["diff"] + self.params["low"]
+        return torch.rand(x.shape, device=x.device) * self.params["diff"] + self.params["min"]
 
 
 class NormalNoise(Noise):
 
-    def __init__(self, mean: float, std: float):
+    def __init__(self, mean: Number, std: Number):
         super().__init__()
-        assert isinstance(mean, float) and isinstance(std, float), "mean and std must be floats"
+        assert isinstance(mean, Number) and isinstance(std, Number), "mean and std must be floats"
         self.params["mean"] = nn.Parameter(torch.tensor(mean), requires_grad=False)
         self.params["std"] = nn.Parameter(torch.tensor(std), requires_grad=False)
 
@@ -60,31 +58,41 @@ class NormalNoise(Noise):
 
 class EpsilonNoise(Noise):
 
-    def __init__(self, noise: Noise, epsilon: float):
+    def __init__(self, noise: Noise, epsilon: Number):
         super().__init__()
         assert isinstance(noise, Noise), "noise must be a Noise object"
-        assert isinstance(epsilon, float), "epsilon must be a float"
+        assert isinstance(epsilon, Number), "epsilon must be a Number"
         self.params["noise"] = noise
-        self.params["epsilon"] = nn.Parameter(torch.tensor(epsilon), requires_grad=False)
+        self.params["epsilon"] = nn.Parameter(torch.tensor(epsilon, torch.float32),
+                                              requires_grad=False)
 
     def __call__(self, x: Tensor):
         choice = torch.rand(x.shape[0], device=x.device) < self.params["epsilon"]
         return torch.where(choice[:, None], self.params["noise"](x), 0)
 
 
+class ZeroNoise(Noise):
+
+    def __init__(self):
+        super().__init__()
+
+    def __call__(self, x: Tensor):
+        return torch.zeros_like(x)
+
+
 class HybridNoise(Noise):
 
-    def __init__(self, noise: list[Noise], prob: Tensor):
+    def __init__(self, noise: list[Noise | dict], prob: Iterable[Number]):
         """Sample noise from a list of noise with given probability."""
         super().__init__()
         prob = torch.tensor(prob, dtype=torch.float32)
         assert len(noise) == len(prob), "noise and prob must have the same length"
+        # Convert potential dicts to Noise objects
+        noise = [noise_cls(n["type"])(**n["kwargs"]) if isinstance(n, dict) else n for n in noise]
         assert all(isinstance(n, Noise) for n in noise), "noise must be a list of Noise objects"
-        assert all(n.shape == noise[0].shape for n in noise), "all noise must have the same shape"
         assert prob.sum() == 1.0, "prob must sum to 1"
         self.params["noise"] = nn.ModuleList(noise)
         self.params["prob"] = nn.Parameter(prob, requires_grad=False)
-        self.shape = noise[0].shape
 
     def __call__(self):
         return self.params["noise"][torch.multinomial(self.params["prob"], 1)]()
