@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 from typing import Any, Callable
 import logging
 
@@ -12,10 +13,21 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-class TensorDictWrapper(Wrapper):
+class TensorDictWrapper(Wrapper, ABC):
 
     def __init__(self, env: Env):
         super().__init__(env)
+
+    @abstractmethod
+    def step(self, action: Tensor) -> TensorDict[str, Tensor]:
+        ...
+
+    @abstractmethod
+    def reset(self,
+              *,
+              seed: int | None = None,
+              options: dict[str, Any] | None = None) -> TensorDict:
+        ...
 
 
 class DefaultTensorDictWrapper(TensorDictWrapper):
@@ -35,10 +47,6 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
 
         self.num_envs = env.num_envs
         self.device = device
-
-        self.observation_space.sample = self._patch_space(self.env.observation_space.sample)
-        self.action_space.sample = self._patch_space(self.env.action_space.sample)
-
         self._use_info = True
 
         # Infer the device of the environment. If the environment action space is a numpy array,
@@ -49,6 +57,9 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
 
         self.observation_space = env.observation_space
         self.action_space = env.action_space
+        self.observation_space.sample = self._patch_space(self.env.observation_space.sample)
+        self.action_space.sample = self._patch_space(self.env.action_space.sample)
+
         self.num_envs = env.num_envs
         if self.env_mode == "np":  # Patch the sample() methods to return Tensors on the device
             self.observation_space.sample = self._patch_space(self.env.observation_space.sample)
@@ -58,16 +69,11 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
         sample = TensorDict({"action": action}, batch_size=self.num_envs, device=self.device)
         action = self.transform_action(action)  # Convert to np if necessary or send to env_device
         next_obs, reward, terminated, truncated, info = self.env.step(action)
-        if self._use_info:  # If info has failed once, we disable it for the rest of the run
-            try:
-                sample["info"] = TensorDict(info, batch_size=self.num_envs, device=self.device)
-            except RuntimeError:
-                logger.warning("Failed to convert info to TensorDict. Disabling info.")
-                self._use_info = False
         sample["next_obs"] = self.transform_obs(next_obs)
-        sample["reward"] = torch.as_tensor(reward)
+        sample["reward"] = torch.as_tensor(reward, dtype=torch.float64)
         sample["terminated"] = torch.as_tensor(terminated)
         sample["truncated"] = torch.as_tensor(truncated)
+        sample["info"] = self.transform_info(info)
         return sample
 
     def reset(self,
@@ -81,6 +87,7 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
                 sample["info"] = TensorDict(info, batch_size=self.num_envs, device=self.device)
             except RuntimeError:
                 logger.warning("Failed to convert info to TensorDict. Disabling info.")
+                logger.warning(f"Info: {info}")
                 self._use_info = False
         sample["obs"] = self.transform_obs(obs)
         return sample
@@ -100,6 +107,34 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
         if self.env_mode == "np":
             return action.cpu().numpy()
         return action.to(self.env_device)
+
+    def transform_info(self, info: dict) -> TensorDict:
+        assert isinstance(info, dict), f"Expected dict, got {type(info)}"
+        info_tf = {}
+        for key, value in info.items():
+            match value:
+                case np.ndarray():
+                    if value.dtype == np.object_:
+                        info_tf[key] = self._transform_np_object(value)
+                    else:
+                        info_tf[key] = torch.as_tensor(value, device=self.device)
+                case Tensor():
+                    info_tf[key] = value.to(self.device)
+                case _:
+                    raise TypeError(f"Cannot convert info key {key} with value {value}.")
+        return TensorDict(info_tf, batch_size=self.num_envs, device=self.device)
+
+    def _transform_np_object(self, value: np.ndarray) -> dict[str, np.ndarray] | np.ndarray:
+        """Converts a numpy array with dtype np.object to a list of Tensors."""
+        assert isinstance(value, np.ndarray), f"Expected np.ndarray, got {type(value)}"
+        assert value.dtype == object, f"Expected dtype np.object, got {value.dtype}"
+        match value[0]:
+            case dict():
+                return {k: np.stack([d[k] for d in value]) for k in value[0].keys()}
+            case np.ndarray():
+                return np.stack([x for x in value])
+            case _:
+                raise TypeError(f"Unsupported type {type(value[0])}")
 
     def _patch_space(self, fn: Callable) -> Callable:
 

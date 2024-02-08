@@ -3,10 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import TypeVar, Callable
+from typing import Any
 import inspect
 
 import torch
-from typing import Any
+import numpy as np
 from lsy_rl.ddpg.policy import DDPGActor, DDPGCritic
 from lsy_rl.core.replay_buffer import ReplayBuffer, SimpleReplayBuffer, replay_buffer_cls
 from lsy_rl.core.transforms import IdentityTF, Transform, ChainedTF, transform_cls
@@ -39,6 +40,7 @@ def required_args(cls: type) -> list[str]:
 
 
 def convert_transforms(transforms: list[Transform | dict] | Transform) -> Transform:
+    # TODO: Check if we can use torch.compile to speed up the process
     if isinstance(transforms, Transform):
         return transforms
     tfs = []
@@ -74,6 +76,7 @@ class EnvConfig:
 class RolloutConfig:
 
     max_samples: int
+    obs_transform: Transform = field(default_factory=IdentityTF)
     action_transform: Transform = field(default_factory=IdentityTF)
     replay_buffer_cls: type[ReplayBuffer] = SimpleReplayBuffer
     replay_buffer_kwargs: dict[str, Any] = field(default_factory=lambda: {
@@ -87,6 +90,7 @@ class RolloutConfig:
         check_kwargs(self.replay_buffer_kwargs,
                      self.replay_buffer_cls,
                      ignore=["num_envs", "device"])
+        self.obs_transform = convert_transforms(self.obs_transform)
         self.action_transform = convert_transforms(self.action_transform)
 
 
@@ -101,12 +105,14 @@ class TrainConfig:
     critic_target_freq: int = 2
     actor_lr: float = 1e-4
     critic_lr: float = 1e-3
+    min_samples: int = 1
     actor_cls: type[DDPGActor] = DDPGActor
     actor_kwargs: dict[str, Any] = field(default_factory=dict)
     critic_cls: type[DDPGCritic] = DDPGCritic
     critic_kwargs: dict[str, Any] = field(default_factory=dict)
     policy_kwargs: dict[str, Any] = field(default_factory=dict)
     batch_size: int = 64
+    obs_transform: Transform = field(default_factory=IdentityTF)
     action_transform: Transform = field(default_factory=IdentityTF)
     target_action_transform: Transform = field(default_factory=IdentityTF)
     gamma: float = 0.99
@@ -120,6 +126,7 @@ class TrainConfig:
         check_kwargs(self.actor_kwargs, self.actor_cls, ignore=["obs_space", "action_space"])
         self.critic_cls = maybe_str_to_cls(self.critic_cls, expected_type=torch.nn.Module)
         check_kwargs(self.critic_kwargs, self.critic_cls, ignore=["obs_space", "action_space"])
+        self.obs_transform = convert_transforms(self.obs_transform)
         self.action_transform = convert_transforms(self.action_transform)
         self.target_action_transform = convert_transforms(self.target_action_transform)
 
@@ -129,9 +136,12 @@ class EvalConfig:
 
     freq: int
     steps: int
+    obs_transform: Transform = field(default_factory=IdentityTF)
     action_transform: Transform = field(default_factory=IdentityTF)
+    success_criteria: Callable[[list[float]], np.ndarray] | None = None
 
     def __post_init__(self):
+        self.obs_transform = convert_transforms(self.obs_transform)
         self.action_transform = convert_transforms(self.action_transform)
 
 

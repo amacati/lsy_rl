@@ -1,5 +1,7 @@
 import logging
 from types import SimpleNamespace
+import time
+import random
 
 import torch
 import numpy as np
@@ -23,7 +25,8 @@ class DDPG(Algorithm):
                  env: VectorEnv,
                  eval_env: VectorEnv,
                  config: SimpleNamespace,
-                 logger: Logger = EmptyLogger()):
+                 logger: Logger = EmptyLogger(),
+                 seed: int | None = None):
         super().__init__()
         assert hasattr(env, "num_envs"), "The environment must have a 'num_envs' attribute."
         self.cfg = self._parse_config(config)
@@ -36,8 +39,22 @@ class DDPG(Algorithm):
             eval_env = DefaultTensorDictWrapper(eval_env, device=self.cfg.train.device)
         self.eval_env = eval_env
         self.separate_eval_env = eval_env is not env
-        self.logger = logger
 
+        # Set random seeds
+        self.seed = seed
+        self._env_seed = None
+        self._eval_env_seed = None
+        if seed is not None:
+            assert isinstance(seed, int), "The seed must be an integer."
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+            random.seed(seed)
+            self._env_seed = np.array([i + seed for i in range(env.num_envs)])
+            # Make sure the seeds for the eval envs are different from the train envs
+            eval_env_seed = [i + seed + env.num_envs for i in range(eval_env.num_envs)]
+            self._eval_env_seed = np.array(eval_env_seed)
+
+        self.logger = logger
         # Initialize the policy with actor and critic networks
         spaces = {"obs_space": env.observation_space, "action_space": env.action_space}
         self.cfg.train.actor_kwargs |= spaces
@@ -48,10 +65,10 @@ class DDPG(Algorithm):
         self.cfg.train.policy_kwargs["critic"] = critic
         self.policy = DDPGPolicy(**self.cfg.train.policy_kwargs, device=self.cfg.train.device)
         # Initialize the optimizers
-        self.actor_optimizer = torch.optim.AdamW(self.policy.actor.parameters(),
-                                                 lr=self.cfg.train.actor_lr)
-        self.critic_optimizer = torch.optim.AdamW(self.policy.critic.parameters(),
-                                                  lr=self.cfg.train.critic_lr)
+        self.actor_optimizer = torch.optim.Adam(self.policy.actor.parameters(),
+                                                lr=self.cfg.train.actor_lr)
+        self.critic_optimizer = torch.optim.Adam(self.policy.critic.parameters(),
+                                                 lr=self.cfg.train.critic_lr)
         # Put transforms on the same device as the policy
         device = self.cfg.train.device
         self.cfg.rollout.action_transform = self.cfg.rollout.action_transform.to(device)
@@ -77,7 +94,8 @@ class DDPG(Algorithm):
                 "ep_steps": 0,
                 "ep_reward": 0,
                 "ep_count": 0
-            }
+            },
+            "start_time": time.time()
         }
         self.train_info = {
             "num_samples": 0,
@@ -106,12 +124,10 @@ class DDPG(Algorithm):
 
     @property
     def train_condition(self):
-        if self.rollout_info["num_samples"] < self.cfg.train.batch_size:
-            return False  # Make sure we have enough samples for a batch
+        if self.rollout_info["num_samples"] < self.cfg.train.min_samples:
+            return False
         num_samples = self.rollout_info["num_samples"] - self.train_info["num_samples"]
-        if num_samples >= self.cfg.train.freq:
-            return True
-        return False
+        return num_samples >= self.cfg.train.freq
 
     @property
     def eval_condition(self):
@@ -145,30 +161,46 @@ class DDPG(Algorithm):
 
         # If first rollout, reset the environment
         if not "obs" in self.rollout_info:
-            self.rollout_info["obs"] = self.env.reset()
+            # This reset happens only once, so we don't need to alter the seed
+            seed = None if self.seed is None else self._env_seed.tolist()
+            self.rollout_info["obs"] = self.env.reset(seed=seed)
         obs = self.rollout_info["obs"]
 
         # Calculate how many samples to collect before we need to interrupt for any callbacks
         required_samples = self.rollout_info["num_samples"] + self._next_required_samples()
         while self.rollout_info["num_samples"] < required_samples:
-            action = self.policy.actor(obs["obs"])
+            self.cfg.rollout.obs_transform.update(obs["obs"])
+            obs_t, _ = self.cfg.rollout.obs_transform(obs["obs"])
+            action = self.policy.actor(obs_t)
             action, _ = self.cfg.rollout.action_transform(action, obs)
             sample = self.env.step(action)
             sample["obs"], sample["action"] = obs["obs"], action
+            # Vector environments automatically reset after T steps. The last observation is
+            # already the first observation of the next episode. We have to handle two cases:
+            # 1) When we continue sampling, we want obs["obs"] to be the first observation of the
+            # next episode.
+            # 2) The sample added to the buffer should have the terminal observation as next_obs.
+            obs["obs"] = sample["next_obs"]  # Avoid cloning if we don't need to
+
+            done = sample["terminated"] | sample["truncated"]
+            if torch.any(done):  # Case 2: Replace sample next_obs with the final observation
+                # Case 1: Make obs["obs"] the first observation of the next episode. We need to
+                # clone the sample because we will modify it in the next step
+                obs["obs"] = sample["next_obs"].clone()
+                # Case 2: Replace the next_obs with the final observation
+                sample["next_obs"][done] = sample["info"]["final_observation"][done]
             self.buffer.add(sample)
-            obs["obs"] = sample["next_obs"]
+
             self.rollout_info["num_samples"] += self.env.num_envs
             self.rollout_info["steps"] += 1
             self.rollout_info["rewards"] += sample["reward"]
-
             # If any of the environments are terminated or truncated, log the episode statistics
-            if any(sample["terminated"]) or any(sample["truncated"]):
-                idx = sample["terminated"] | sample["truncated"]
-                self.rollout_info["log"]["ep_steps"] += (self.rollout_info["steps"][idx].sum())
-                self.rollout_info["log"]["ep_reward"] += (self.rollout_info["rewards"][idx].sum())
-                self.rollout_info["log"]["ep_count"] += len(idx)
-                self.rollout_info["steps"][idx] = 0
-                self.rollout_info["rewards"][idx] = 0
+            if torch.any(done):
+                self.rollout_info["log"]["ep_steps"] += (self.rollout_info["steps"][done].sum())
+                self.rollout_info["log"]["ep_reward"] += (self.rollout_info["rewards"][done].sum())
+                self.rollout_info["log"]["ep_count"] += len(done)
+                self.rollout_info["steps"][done] = 0
+                self.rollout_info["rewards"][done] = 0
 
             self._rate_limit_rollout_log()
 
@@ -187,21 +219,23 @@ class DDPG(Algorithm):
                 batch = self.buffer.sample(self.cfg.train.batch_size)
                 # Compute the expected Q values with the reward and the target networks
                 with torch.no_grad():
-                    next_action = self.policy.actor.target(batch["next_obs"])
+                    next_obs_t, _ = self.cfg.train.obs_transform(batch["next_obs"])
+                    next_action = self.policy.actor.target(next_obs_t)
                     next_action, _ = self.cfg.train.target_action_transform(next_action, batch)
-                    next_q_target = self.policy.critic.target(batch["next_obs"], next_action)
+                    next_q_target = self.policy.critic.target(next_obs_t, next_action)
                     # Reward, terminated are one-dimensional, so we need to reshape them to avoid
                     # broadcasting errors
                     reward = batch["reward"].reshape(-1, 1)
                     terminated = batch["terminated"].reshape(-1, 1)
                     q_target = reward + (self.cfg.train.gamma * ~terminated * next_q_target)
-                    q_target = torch.clamp(q_target, self.cfg.train.reward_clip[0],
-                                           self.cfg.train.reward_clip[1])
+                    q_target = torch.clamp(q_target, *self.cfg.train.reward_clip)
                 # Compute the loss as the MSE between the expected Q values and the Q values from
                 # the critic
-                q_expected = self.policy.critic(batch["obs"], batch["action"])
+                obs_t, _ = self.cfg.train.obs_transform(batch["obs"])
+                q_expected = self.policy.critic(obs_t, batch["action"])
                 assert q_target.shape == (self.cfg.train.batch_size, 1), q_target.shape
-                critic_loss = torch.mean((q_expected - q_target)**2)
+                assert q_expected.shape == q_target.shape, (q_expected.shape, q_target.shape)
+                critic_loss = (q_target - q_expected).pow(2).mean()
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.policy.critic.parameters(),
@@ -214,9 +248,10 @@ class DDPG(Algorithm):
                 batch = self.buffer.sample(self.cfg.train.batch_size)
                 # Compute the actions for the sample observations, compute the critic value of the
                 # observations and actions and compute the actor loss by maximizing the critic value
-                train_action = self.policy.actor(batch["obs"])
+                obs_t, _ = self.cfg.train.obs_transform(batch["obs"])
+                train_action = self.policy.actor(obs_t)
                 train_action, _ = self.cfg.train.action_transform(train_action, batch)
-                actor_loss = -self.policy.critic(batch["obs"], train_action).mean()
+                actor_loss = -self.policy.critic(obs_t, train_action).mean()
 
                 self.actor_optimizer.zero_grad()
                 actor_loss.backward()
@@ -238,11 +273,16 @@ class DDPG(Algorithm):
     @torch.no_grad()
     def evaluate_policy(self):
         self.policy.actor.eval()
-        obs = self.eval_env.reset()
+        if self.seed is None:
+            seed = None
+        else:
+            seed = (self._eval_env_seed + self.rollout_info["num_samples"]).tolist()
+        obs = self.eval_env.reset(seed=seed)
         num_samples = 0
-        rewards, ep_rewards, ep_steps = [], [], []
+        rewards, ep_rewards, ep_steps, ep_last_rewards = [], [], [], []
         while num_samples < self.cfg.eval.steps:
-            action = self.policy.action(obs["obs"])
+            obs_t, _ = self.cfg.eval.obs_transform(obs["obs"])
+            action = self.policy.action(obs_t)
             action, _ = self.cfg.eval.action_transform(action, obs)
             sample = self.eval_env.step(action)
             obs["obs"] = sample["next_obs"]
@@ -250,10 +290,11 @@ class DDPG(Algorithm):
             rewards += sample["reward"].tolist()
             self.eval_info["steps"] += 1
 
-            if any(sample["terminated"]) or any(sample["truncated"]):
+            if torch.any(sample["terminated"]) or torch.any(sample["truncated"]):
                 idx = sample["terminated"] | sample["truncated"]
                 ep_steps += self.eval_info["steps"][idx].tolist()
                 ep_rewards += self.eval_info["rewards"][idx].tolist()
+                ep_last_rewards += sample["reward"][idx].tolist()
                 self.eval_info["steps"][idx] = 0
                 self.eval_info["rewards"][idx] = 0
 
@@ -263,32 +304,38 @@ class DDPG(Algorithm):
         if ep_rewards:
             data["eval/ep_mean_reward"] = np.array(ep_rewards).mean()
             data["eval/ep_mean_steps"] = np.array(ep_steps).mean()
+            if self.cfg.eval.success_criteria is not None:
+                success = self.cfg.eval.success_criteria(ep_last_rewards)
+                data["eval/success_rate"] = success.mean()
         self.logger.log(data, step=self.rollout_info["num_samples"])
         self._update_eval_info()
         # If the train and eval envs are the same, we need to reset the env and save the obs to the
         # rollout info. Otherwise, the next rollout will start from the last state of the eval env,
         # but will still use the last observation from the latest rollout
         if not self.separate_eval_env:
-            self.rollout_info["obs"] = self.env.reset()
+            if self.seed is None:
+                seed = None
+            else:
+                seed = (self._eval_env_seed + self.rollout_info["num_samples"]).tolist()
+            self.rollout_info["obs"] = self.env.reset(seed=seed)
         self.policy.actor.train()
 
     def save_checkpoint(self):
         assert self.cfg.checkpoint.path.is_dir(), "The checkpoint path must be a directory."
         self.policy.save(self.cfg.checkpoint.path / "policy.pt")
         self.buffer.save(self.cfg.checkpoint.path / "buffer.pt")
+        torch.save(self.cfg.rollout.obs_transform.state_dict(),
+                   self.cfg.checkpoint.path / "obs_transform.pt")
         self.checkpoint_info["num_samples"] = self.rollout_info["num_samples"]
 
     def _next_required_samples(self):
         # Calculate required samples for next training step
         current_samples = self.rollout_info["num_samples"] - self.train_info["num_samples"]
         train_samples = self.cfg.train.freq - current_samples
-        # Check if we have enough samples for a batch. If not, collect as many samples as required
-        # to fill a batch
-        if self.rollout_info["num_samples"] - self.cfg.train.batch_size < 0:
-            if train_samples < self.cfg.train.batch_size - self.rollout_info["num_samples"]:
-                train_samples = self.cfg.train.batch_size - self.rollout_info["num_samples"]
-        if train_samples == 0:
-            train_samples = self.cfg.train.freq
+        train_samples = train_samples if train_samples > 0 else self.cfg.train.freq
+        if self.cfg.train.min_samples is not None:
+            if self.rollout_info["num_samples"] < self.cfg.train.min_samples:
+                train_samples = self.cfg.train.min_samples - self.rollout_info["num_samples"]
 
         # Calculate required samples for next eval step
         current_samples = self.rollout_info["num_samples"] - self.eval_info["num_samples"]
@@ -316,6 +363,13 @@ class DDPG(Algorithm):
                 self.rollout_info["log"]["ep_steps"] = 0
                 self.rollout_info["log"]["ep_reward"] = 0
                 self.rollout_info["log"]["ep_count"] = 0
+            elapsed_time = time.time() - self.rollout_info["start_time"]
+            data = {
+                "time/time_elapsed": elapsed_time,
+                "time/total_timesteps": self.rollout_info["num_samples"],
+                "time/fps": self.rollout_info["num_samples"] / elapsed_time
+            }
+            self.logger.log(data, step=self.rollout_info["num_samples"])
 
     def _rate_limit_train_log(self):
         if self.train_info["num_train_steps"] % self.train_info["log_freq"] == 0:

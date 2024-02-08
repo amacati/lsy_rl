@@ -48,7 +48,7 @@ class DDPGActorNetwork(nn.Module):
         })
 
     def forward(self, obs: FloatTensor) -> FloatTensor:
-        x = obs
+        x = obs.float()
         for layer in self.network.values():
             x: FloatTensor = layer(x)
         return x
@@ -70,6 +70,8 @@ class DDPGCritic(nn.Module):
         return self.network(torch.cat([obs, action], dim=-1))
 
     def target(self, obs: FloatTensor, action: FloatTensor):
+        assert obs.dtype == torch.float32, f"Invalid dtype {obs.dtype}"
+        assert action.dtype == torch.float32, f"Invalid dtype {action.dtype}"
         return self.target_network(torch.cat([obs, action], dim=-1))
 
     def update_target(self, tau: float):
@@ -91,7 +93,7 @@ class DDPGCriticNetwork(nn.Module):
         })
 
     def forward(self, obs_action: FloatTensor) -> FloatTensor:
-        x = obs_action
+        x = obs_action.float()
         for layer in self.network.values():
             x = layer(x)
         return x
@@ -103,7 +105,10 @@ class DDPGPolicy(Policy):
         super().__init__()
         self.device = torch.device(device)
         self.actor = actor.to(self.device)
+        # TODO: Activate compile and check if it improves runtime
+        # self.actor = torch.compile(self.actor)
         self.critic = critic.to(self.device)
+        # self.critic = torch.compile(self.critic)
 
     def action(self, obs: FloatTensor) -> FloatTensor:
         return self.actor(obs)

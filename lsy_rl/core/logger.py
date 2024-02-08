@@ -60,6 +60,10 @@ class LoggerList(Logger):
         for logger in self.loggers:
             logger.stop()
 
+    def append(self, logger: Logger):
+        assert isinstance(logger, Logger)
+        self.loggers.append(logger)
+
 
 class ConsoleLogger(Logger):
 
