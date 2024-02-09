@@ -1,7 +1,6 @@
 """Wrapper for rescaling actions to within a max and min action."""
-from typing import Union
+from typing import Any
 
-import numpy as np
 import torch
 from torch import Tensor
 
@@ -32,5 +31,9 @@ class ScaleAction(TensorDictWrapper):
     def transform_action(self, action: Tensor) -> Tensor:
         return action * self.scale
 
-    def reset(self) -> TensorDict[str, Tensor]:
-        return self.env.reset()
+    def reset(self,
+              *,
+              seed: int | None = None,
+              options: dict[str, Any] | None = None) -> TensorDict[str, Tensor]:
+        super().reset(seed=seed, options=options)
+        return self.env.reset(seed=seed, options=options)

@@ -57,6 +57,7 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
         self._action_space = copy.deepcopy(env.action_space)
         self._observation_space.sample = self._patch_space(self._observation_space.sample)
         self._action_space.sample = self._patch_space(self._action_space.sample)
+        self._failed_info_keys = set()  # Keep track of info keys that failed to convert
 
     def step(self, action: Tensor) -> TensorDict[str, Tensor]:
         sample = TensorDict({"action": action}, batch_size=self.num_envs, device=self.device)
@@ -73,8 +74,6 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
               *,
               seed: int | None = None,
               options: dict[str, Any] | None = None) -> tuple[Tensor, dict[str, Any]]:
-        super().reset(seed=seed, options=options)
-        self.env.np_random = np.random.RandomState(seed)
         obs, info = self.env.reset(seed=seed, options=options)
         sample = TensorDict({}, batch_size=self.num_envs, device=self.device)
         sample["obs"] = self.transform_obs(obs)
@@ -110,7 +109,10 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
                 case Tensor():
                     info_tf[key] = value.to(self.device)
                 case _:
-                    raise TypeError(f"Cannot convert info key {key} with value {value}.")
+                    if key not in self._failed_info_keys:
+                        self._failed_info_keys.add(key)  # Only log once per key
+                        logger.warning((f"Dropping info key '{key}' with unsupported conversion "
+                                        f"type {type(value)}"))
         return TensorDict(info_tf, batch_size=self.num_envs, device=self.device)
 
     def _transform_np_object(self, value: np.ndarray) -> dict[str, np.ndarray] | np.ndarray:

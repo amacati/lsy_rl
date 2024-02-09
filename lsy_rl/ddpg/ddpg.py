@@ -9,7 +9,7 @@ from gymnasium.vector import VectorEnv
 
 from lsy_rl.core import Algorithm
 from lsy_rl.core.logger import Logger, EmptyLogger
-from lsy_rl.wrappers.tensordict_wrapper import TensorDictWrapper, DefaultTensorDictWrapper
+from lsy_rl.wrappers.wrapper import wrap_env
 from lsy_rl.ddpg.config import DDPGConfig, EnvConfig, TrainConfig, EvalConfig, CheckpointConfig
 from lsy_rl.ddpg.config import RolloutConfig
 from lsy_rl.ddpg.policy import DDPGPolicy
@@ -33,13 +33,9 @@ class DDPG(Algorithm):
         self.cfg = self._parse_config(config)
 
         # Create wrapped environments so that the observations and actions are always Tensors
-        if not isinstance(env, TensorDictWrapper):
-            env = DefaultTensorDictWrapper(env, device=self.cfg.train.device)
-        self.env = env
-        if not isinstance(eval_env, TensorDictWrapper):
-            eval_env = DefaultTensorDictWrapper(eval_env, device=self.cfg.train.device)
-        self.eval_env = eval_env
-        self.separate_eval_env = eval_env is not env
+        self.env = wrap_env(env, device=self.cfg.train.device)
+        self.eval_env = wrap_env(eval_env, device=self.cfg.train.device)
+        self.separate_eval_env = self.env.unwrapped is not self.eval_env.unwrapped
 
         # Set random seeds
         self.seed = seed
@@ -47,7 +43,7 @@ class DDPG(Algorithm):
 
         self.logger = logger
         # Initialize the policy with actor and critic networks
-        spaces = {"obs_space": env.observation_space, "action_space": env.action_space}
+        spaces = {"obs_space": self.env.observation_space, "action_space": self.env.action_space}
         self.cfg.train.actor_kwargs |= spaces
         actor = self.cfg.train.actor_cls(**self.cfg.train.actor_kwargs)
         self.cfg.train.policy_kwargs["actor"] = actor
