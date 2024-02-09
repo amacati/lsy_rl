@@ -105,10 +105,9 @@ class DDPGPolicy(Policy):
         super().__init__()
         self.device = torch.device(device)
         self.actor = actor.to(self.device)
-        # TODO: Activate compile and check if it improves runtime
-        # self.actor = torch.compile(self.actor)
+        self.actor = torch.compile(self.actor)
         self.critic = critic.to(self.device)
-        # self.critic = torch.compile(self.critic)
+        self.critic = torch.compile(self.critic)
 
     def action(self, obs: FloatTensor) -> FloatTensor:
         return self.actor(obs)

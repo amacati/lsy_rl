@@ -40,7 +40,6 @@ def required_args(cls: type) -> list[str]:
 
 
 def convert_transforms(transforms: list[Transform | dict] | Transform) -> Transform:
-    # TODO: Check if we can use torch.compile to speed up the process
     if isinstance(transforms, Transform):
         return transforms
     tfs = []

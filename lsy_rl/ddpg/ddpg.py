@@ -28,6 +28,7 @@ class DDPG(Algorithm):
                  logger: Logger = EmptyLogger(),
                  seed: int | None = None):
         super().__init__()
+        # torch.set_float32_matmul_precision('high')  # TODO: Check if this impacts performance
         assert hasattr(env, "num_envs"), "The environment must have a 'num_envs' attribute."
         self.cfg = self._parse_config(config)
 
@@ -42,17 +43,7 @@ class DDPG(Algorithm):
 
         # Set random seeds
         self.seed = seed
-        self._env_seed = None
-        self._eval_env_seed = None
-        if seed is not None:
-            assert isinstance(seed, int), "The seed must be an integer."
-            torch.manual_seed(seed)
-            np.random.seed(seed)
-            random.seed(seed)
-            self._env_seed = np.array([i + seed for i in range(env.num_envs)])
-            # Make sure the seeds for the eval envs are different from the train envs
-            eval_env_seed = [i + seed + env.num_envs for i in range(eval_env.num_envs)]
-            self._eval_env_seed = np.array(eval_env_seed)
+        self._set_seed(seed)
 
         self.logger = logger
         # Initialize the policy with actor and critic networks
@@ -161,9 +152,7 @@ class DDPG(Algorithm):
 
         # If first rollout, reset the environment
         if not "obs" in self.rollout_info:
-            # This reset happens only once, so we don't need to alter the seed
-            seed = None if self.seed is None else self._env_seed.tolist()
-            self.rollout_info["obs"] = self.env.reset(seed=seed)
+            self.rollout_info["obs"] = self.env.reset()
         obs = self.rollout_info["obs"]
 
         # Calculate how many samples to collect before we need to interrupt for any callbacks
@@ -273,11 +262,7 @@ class DDPG(Algorithm):
     @torch.no_grad()
     def evaluate_policy(self):
         self.policy.actor.eval()
-        if self.seed is None:
-            seed = None
-        else:
-            seed = (self._eval_env_seed + self.rollout_info["num_samples"]).tolist()
-        obs = self.eval_env.reset(seed=seed)
+        obs = self.eval_env.reset()
         num_samples = 0
         rewards, ep_rewards, ep_steps, ep_last_rewards = [], [], [], []
         while num_samples < self.cfg.eval.steps:
@@ -313,11 +298,7 @@ class DDPG(Algorithm):
         # rollout info. Otherwise, the next rollout will start from the last state of the eval env,
         # but will still use the last observation from the latest rollout
         if not self.separate_eval_env:
-            if self.seed is None:
-                seed = None
-            else:
-                seed = (self._eval_env_seed + self.rollout_info["num_samples"]).tolist()
-            self.rollout_info["obs"] = self.env.reset(seed=seed)
+            self.rollout_info["obs"] = self.env.reset()
         self.policy.actor.train()
 
     def save_checkpoint(self):
@@ -396,6 +377,19 @@ class DDPG(Algorithm):
         # the values from the previous run
         self.eval_info["steps"][...] = 0
         self.eval_info["rewards"][...] = 0
+
+    def _set_seed(self, seed: int | None):
+        if seed is not None:
+            assert isinstance(seed, int), "The seed must be an integer."
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+            random.seed(seed)
+            env_seed = [i + seed for i in range(self.env.num_envs)]
+            self.env.reset(seed=env_seed)  # Reset once to set the correct RNG state
+            # Make sure the seeds for the eval envs are different from the train envs
+            eval_env_seed = [i + seed + self.env.num_envs for i in range(self.eval_env.num_envs)]
+            if self.separate_eval_env:  # Only reset if the eval env is not also the train env
+                self.eval_env.reset(seed=eval_env_seed)
 
     def _parse_config(self, config: SimpleNamespace) -> DDPGConfig:
         # Create env config

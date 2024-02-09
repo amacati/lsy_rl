@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 import logging
+import copy
 
 from gymnasium import Env
 from gymnasium import Wrapper
@@ -41,13 +42,8 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
 
     def __init__(self, env: Env, device: torch.device = torch.device("cpu")):
         super().__init__(env)
-        self.env = env
-        self.observation_space = env.observation_space
-        self.action_space = env.action_space
-
         self.num_envs = env.num_envs
         self.device = device
-        self._use_info = True
 
         # Infer the device of the environment. If the environment action space is a numpy array,
         # we need to convert the step() action to a numpy array before passing it to the
@@ -55,15 +51,12 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
         # correct device
         self.env_mode, self.env_device = self._determine_env_mode(env)
 
-        self.observation_space = env.observation_space
-        self.action_space = env.action_space
-        self.observation_space.sample = self._patch_space(self.env.observation_space.sample)
-        self.action_space.sample = self._patch_space(self.env.action_space.sample)
-
-        self.num_envs = env.num_envs
-        if self.env_mode == "np":  # Patch the sample() methods to return Tensors on the device
-            self.observation_space.sample = self._patch_space(self.env.observation_space.sample)
-            self.action_space.sample = self._patch_space(self.env.action_space.sample)
+        # Patch the sample() methods to return Tensors on the device. Use copy.deepcopy to avoid
+        # modifying the original spaces.
+        self._observation_space = copy.deepcopy(env.observation_space)
+        self._action_space = copy.deepcopy(env.action_space)
+        self._observation_space.sample = self._patch_space(self._observation_space.sample)
+        self._action_space.sample = self._patch_space(self._action_space.sample)
 
     def step(self, action: Tensor) -> TensorDict[str, Tensor]:
         sample = TensorDict({"action": action}, batch_size=self.num_envs, device=self.device)
@@ -80,16 +73,12 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
               *,
               seed: int | None = None,
               options: dict[str, Any] | None = None) -> tuple[Tensor, dict[str, Any]]:
+        super().reset(seed=seed, options=options)
+        self.env.np_random = np.random.RandomState(seed)
         obs, info = self.env.reset(seed=seed, options=options)
         sample = TensorDict({}, batch_size=self.num_envs, device=self.device)
-        if self._use_info:
-            try:
-                sample["info"] = TensorDict(info, batch_size=self.num_envs, device=self.device)
-            except RuntimeError:
-                logger.warning("Failed to convert info to TensorDict. Disabling info.")
-                logger.warning(f"Info: {info}")
-                self._use_info = False
         sample["obs"] = self.transform_obs(obs)
+        sample["info"] = self.transform_info(info)
         return sample
 
     def transform_obs(self, obs: np.ndarray | Tensor | dict[str:np.ndarray]) -> Tensor | TensorDict:
