@@ -41,7 +41,7 @@ class OrbitWrapper(DefaultTensorDictWrapper):
 
     def reset(self,
               *,
-              seed: int | None = None,
+              seed: list[int] | None = None,
               options: dict[str, Any] | None = None) -> tuple[Tensor, dict[str, Any]]:
         """Patch Orbit's reset by taking an additional step in the environment.
 
@@ -55,6 +55,7 @@ class OrbitWrapper(DefaultTensorDictWrapper):
         Warning:
             This effectively shortens the environment horizon by one!
         """
+        seed = None if seed is None else seed[0]
         self.env.reset(seed=seed, options=options)
         self.action_space.seed(seed=seed)  # Make random initial action reproducible
         obs, _, _, _, info = self.env.step(self.transform_action(self.action_space.sample()))
