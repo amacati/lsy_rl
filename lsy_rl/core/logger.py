@@ -37,9 +37,6 @@ class EmptyLogger(Logger):
     def flush(self):
         ...
 
-    def stop(self):
-        ...
-
 
 class LoggerList(Logger):
 
@@ -92,9 +89,6 @@ class ConsoleLogger(Logger):
                     case _:
                         print(f"\t{key}: {value}")
 
-    def stop(self):
-        ...
-
 
 class FileLogger(Logger):
 
@@ -124,6 +118,7 @@ class FileLogger(Logger):
                 data[key] = self.jsonify(value)
             elif isinstance(value, (np.ndarray, torch.Tensor)):
                 data[key] = value.tolist()
+        return data
 
 
 class WandBLogger(Logger):

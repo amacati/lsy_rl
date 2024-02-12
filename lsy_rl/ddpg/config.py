@@ -82,6 +82,7 @@ class RolloutConfig:
         "max_size": 1_000_000,
         "num_envs": 1
     })
+    success_criteria: Callable[[list[float]], np.ndarray] | None = None
 
     def __post_init__(self):
         self.replay_buffer_cls = maybe_str_to_cls(self.replay_buffer_cls, replay_buffer_cls,

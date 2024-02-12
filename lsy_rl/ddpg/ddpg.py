@@ -80,7 +80,8 @@ class DDPG(Algorithm):
             "log": {
                 "ep_steps": 0,
                 "ep_reward": 0,
-                "ep_count": 0
+                "ep_count": 0,
+                "last_rewards": []
             },
             "start_time": time.time()
         }
@@ -173,7 +174,7 @@ class DDPG(Algorithm):
                 # clone the sample because we will modify it in the next step
                 obs["obs"] = sample["next_obs"].clone()
                 # Case 2: Replace the next_obs with the final observation
-                sample["next_obs"][done] = sample["info"]["final_observation"][done]
+                sample["next_obs"][done] = sample["info", "final_observation"][done]
             self.buffer.add(sample)
 
             self.rollout_info["num_samples"] += self.env.num_envs
@@ -184,6 +185,7 @@ class DDPG(Algorithm):
                 self.rollout_info["log"]["ep_steps"] += (self.rollout_info["steps"][done].sum())
                 self.rollout_info["log"]["ep_reward"] += (self.rollout_info["rewards"][done].sum())
                 self.rollout_info["log"]["ep_count"] += len(done)
+                self.rollout_info["log"]["last_rewards"].extend(sample["reward"][done].tolist())
                 self.rollout_info["steps"][done] = 0
                 self.rollout_info["rewards"][done] = 0
 
@@ -336,10 +338,15 @@ class DDPG(Algorithm):
                     "rollout/ep_steps": ep_steps / ep_count,
                     "rollout/ep_reward": ep_reward / ep_count
                 }
+                if self.cfg.rollout.success_criteria is not None:
+                    success = self.cfg.rollout.success_criteria(
+                        self.rollout_info["log"]["last_rewards"])
+                    data["rollout/success_rate"] = success.mean()
                 self.logger.log(data, step=self.rollout_info["num_samples"])
                 self.rollout_info["log"]["ep_steps"] = 0
                 self.rollout_info["log"]["ep_reward"] = 0
                 self.rollout_info["log"]["ep_count"] = 0
+                self.rollout_info["log"]["last_rewards"] = []
             elapsed_time = time.time() - self.rollout_info["start_time"]
             data = {
                 "time/time_elapsed": elapsed_time,

@@ -53,21 +53,21 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
 
         # Patch the sample() methods to return Tensors on the device. Use copy.deepcopy to avoid
         # modifying the original spaces.
-        self._observation_space = copy.deepcopy(env.observation_space)
-        self._action_space = copy.deepcopy(env.action_space)
-        self._observation_space.sample = self._patch_space(self._observation_space.sample)
-        self._action_space.sample = self._patch_space(self._action_space.sample)
+        self.observation_space = copy.deepcopy(env.observation_space)
+        self.action_space = copy.deepcopy(env.action_space)
+        self.observation_space.sample = self._patch_space(self.observation_space.sample)
+        self.action_space.sample = self._patch_space(self.action_space.sample)
         self._failed_info_keys = set()  # Keep track of info keys that failed to convert
 
     def step(self, action: Tensor) -> TensorDict[str, Tensor]:
         sample = TensorDict({"action": action}, batch_size=self.num_envs, device=self.device)
         action = self.transform_action(action)  # Convert to np if necessary or send to env_device
         next_obs, reward, terminated, truncated, info = self.env.step(action)
-        sample["next_obs"] = self.transform_obs(next_obs)
-        sample["reward"] = torch.as_tensor(reward, dtype=torch.float64)
-        sample["terminated"] = torch.as_tensor(terminated)
-        sample["truncated"] = torch.as_tensor(truncated)
-        sample["info"] = self.transform_info(info)
+        sample["next_obs"] = self.transform_obs(next_obs).clone()
+        sample["reward"] = torch.as_tensor(reward, dtype=torch.float64).clone()
+        sample["terminated"] = torch.as_tensor(terminated).clone()
+        sample["truncated"] = torch.as_tensor(truncated).clone()
+        sample["info"] = self.transform_info(info).clone()
         return sample
 
     def reset(self,
@@ -76,8 +76,8 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
               options: dict[str, Any] | None = None) -> tuple[Tensor, dict[str, Any]]:
         obs, info = self.env.reset(seed=seed, options=options)
         sample = TensorDict({}, batch_size=self.num_envs, device=self.device)
-        sample["obs"] = self.transform_obs(obs)
-        sample["info"] = self.transform_info(info)
+        sample["obs"] = self.transform_obs(obs).clone()
+        sample["info"] = self.transform_info(info).clone()
         return sample
 
     def transform_obs(self, obs: np.ndarray | Tensor | dict[str:np.ndarray]) -> Tensor | TensorDict:
@@ -92,6 +92,7 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
                 raise TypeError(f"Unsupported type {type(obs)}")
 
     def transform_action(self, action: Tensor) -> Tensor | np.ndarray:
+        assert isinstance(action, Tensor), "Action input must be a tensor"
         if self.env_mode == "np":
             return action.cpu().numpy()
         return action.to(self.env_device)
@@ -129,10 +130,10 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
 
     def _patch_space(self, fn: Callable) -> Callable:
 
-        def wrapper():
+        def space_wrapper():
             return torch.as_tensor(fn(), device=self.device)
 
-        return wrapper
+        return space_wrapper
 
     def _determine_env_mode(self, env: Env) -> tuple[str, torch.device]:
         """Determine the input type and device of the environment.
