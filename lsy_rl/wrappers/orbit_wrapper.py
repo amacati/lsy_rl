@@ -57,8 +57,11 @@ class OrbitWrapper(DefaultTensorDictWrapper):
         """
         seed = None if seed is None else seed[0]
         self.env.reset(seed=seed, options=options)
-        self.action_space.seed(seed=seed)  # Make random initial action reproducible
-        obs, _, _, _, info = self.env.step(self.transform_action(self.action_space.sample()))
+        action = torch.zeros_like(self.action_space.sample())  # Try to take a zero action
+        if action.cpu().numpy() not in self.env.action_space:  # If zero action is invalid, sample
+            self.action_space.seed(seed=seed)  # Make random initial action reproducible
+            action = self.action_space.sample()
+        obs, _, _, _, info = self.env.step(self.transform_action(action))
         sample = TensorDict({}, batch_size=self.num_envs, device=self.device)
         sample["obs"] = self.transform_obs(obs).clone()
         sample["info"] = self.transform_info(info).clone()
