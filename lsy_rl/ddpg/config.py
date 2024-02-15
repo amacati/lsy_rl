@@ -156,3 +156,4 @@ class CheckpointConfig:
             raise ValueError("If 'checkpoint_freq' is not None, 'checkpoint_path' must be set")
         if isinstance(self.path, str):
             self.path = Path(self.path)
+            assert self.path.is_absolute(), "Checkpoint path must be an absolute path"

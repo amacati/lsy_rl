@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from numbers import Number
-import sys
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import torch
 import torch.nn as nn
@@ -12,13 +11,11 @@ from tensordict import TensorDict
 from lsy_rl.core.noise import Noise, noise_cls
 from lsy_rl.utils.utils import module_type_from_string
 
+# TODO: Replace with plain transform
 transform_cls: type[Transform] = module_type_from_string(__name__)
 
 
-def transform_cls(name: str) -> type[Transform]:
-    return getattr(sys.modules[__name__], name)
-
-
+# TODO: Remove transform *args passing in forward
 class Transform(nn.Module):
 
     def __init__(self):
@@ -243,3 +240,16 @@ class TensorDictNormTF(Transform):
                                                             device=value.device),
                                                requires_grad=False)
             self._is_init = True
+
+    def load_state_dict(self,
+                        state_dict: Mapping[str, Any],
+                        strict: bool = True,
+                        assign: bool = False):
+        if not self._is_init:  # Parameters have to be created before loading the state_dict
+            param_dict = {}
+            for key, value in state_dict.items():
+                key = key.split(".")[1]  # Remove "params."
+                if key.endswith("_mean"):  # Infer the previous keys and shapes from the state_dict
+                    param_dict |= {key.removesuffix("_mean"): value.unsqueeze(0)}
+            self._lazy_init(TensorDict(param_dict, batch_size=1))  # Initialize all parameters
+        return super().load_state_dict(state_dict, strict, assign)

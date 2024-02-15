@@ -2,6 +2,8 @@ import logging
 from types import SimpleNamespace
 import time
 import random
+from pathlib import Path
+from datetime import datetime
 
 import torch
 import numpy as np
@@ -104,6 +106,7 @@ class DDPG(Algorithm):
             "steps": torch.zeros(self.env.num_envs, device=self.cfg.train.device),
         }
         self.checkpoint_info = {"num_samples": 0}
+        self.cfg.checkpoint.path = self._unique_run_folder(self.cfg.checkpoint.path)
 
     @property
     def stop_condition(self):
@@ -303,6 +306,8 @@ class DDPG(Algorithm):
         assert self.cfg.checkpoint.path.is_dir(), "The checkpoint path must be a directory."
         self.policy.save(self.cfg.checkpoint.path / "policy.pt")
         self.buffer.save(self.cfg.checkpoint.path / "buffer.pt")
+        torch.save(self.actor_optimizer.state_dict(), self.cfg.checkpoint.path / "actor_opt.pt")
+        torch.save(self.critic_optimizer.state_dict(), self.cfg.checkpoint.path / "critic_opt.pt")
         torch.save(self.cfg.rollout.obs_transform.state_dict(),
                    self.cfg.checkpoint.path / "obs_transform.pt")
         self.checkpoint_info["num_samples"] = self.rollout_info["num_samples"]
@@ -408,3 +413,26 @@ class DDPG(Algorithm):
                 raise ValueError(f"Config {cfg} frequency ({cfg.freq}) must be multiple of "
                                  f"'num_envs' ({env_config.kwargs['num_envs']}).")
         return DDPGConfig(env_config, rollout_config, train_config, eval_config, checkpoint_config)
+
+    def _unique_run_folder(self, save_dir: Path | None) -> Path | None:
+        """Create a unique run folder for the current run based on the save folder.
+
+        The run ID is a timestamp in the format 'YYYY_MM_DD_HH_MM'. If the folder already exists, we
+        append a number to the timestamp, e.g. '2021_01_01_12_00_(1)'.
+
+        Args:
+            save_dir: The directory where the run ID folder will be created.
+
+        Returns:
+            A unique run folder.
+        """
+        if save_dir is None:
+            return
+        run_id = datetime.now().strftime("%Y_%m_%d_%H_%M")
+        if (save_dir / run_id).is_dir():
+            t = 1
+            while (save_dir / f"{run_id}_({run_id})").is_dir():
+                t += 1
+            run_id = f"{run_id}_({t})"
+        (save_dir / run_id).mkdir(parents=True, exist_ok=False)
+        return save_dir / run_id
