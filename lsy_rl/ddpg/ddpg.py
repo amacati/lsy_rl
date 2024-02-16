@@ -106,7 +106,8 @@ class DDPG(Algorithm):
             "steps": torch.zeros(self.env.num_envs, device=self.cfg.train.device),
         }
         self.checkpoint_info = {"num_samples": 0}
-        self.cfg.checkpoint.path = self._unique_run_folder(self.cfg.checkpoint.path)
+        # Don't overwrite the checkpoint path in the config in case it gets reused for multiple runs
+        self.checkpoint_path = self._unique_run_folder(self.cfg.checkpoint.path)
 
     @property
     def stop_condition(self):
@@ -142,7 +143,7 @@ class DDPG(Algorithm):
                 self.evaluate_policy()
             if self.checkpoint_condition:
                 self.save_checkpoint()
-        if self.cfg.checkpoint.path is not None:
+        if self.checkpoint_path is not None:
             self.save_checkpoint()  # Save the final checkpoint even if we don't reach the freq
         self.logger.stop()
 
@@ -303,13 +304,13 @@ class DDPG(Algorithm):
         self.policy.actor.train()
 
     def save_checkpoint(self):
-        assert self.cfg.checkpoint.path.is_dir(), "The checkpoint path must be a directory."
-        self.policy.save(self.cfg.checkpoint.path / "policy.pt")
-        self.buffer.save(self.cfg.checkpoint.path / "buffer.pt")
-        torch.save(self.actor_optimizer.state_dict(), self.cfg.checkpoint.path / "actor_opt.pt")
-        torch.save(self.critic_optimizer.state_dict(), self.cfg.checkpoint.path / "critic_opt.pt")
+        assert self.checkpoint_path.is_dir(), "The checkpoint path must be a directory."
+        self.policy.save(self.checkpoint_path / "policy.pt")
+        self.buffer.save(self.checkpoint_path / "buffer.pt")
+        torch.save(self.actor_optimizer.state_dict(), self.checkpoint_path / "actor_opt.pt")
+        torch.save(self.critic_optimizer.state_dict(), self.checkpoint_path / "critic_opt.pt")
         torch.save(self.cfg.rollout.obs_transform.state_dict(),
-                   self.cfg.checkpoint.path / "obs_transform.pt")
+                   self.checkpoint_path / "obs_transform.pt")
         self.checkpoint_info["num_samples"] = self.rollout_info["num_samples"]
 
     def _next_required_samples(self):

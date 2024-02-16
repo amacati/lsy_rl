@@ -103,11 +103,12 @@ class DDPGPolicy(Policy):
 
     def __init__(self, actor: DDPGActor, critic: DDPGCritic, device: str = "cpu"):
         super().__init__()
+        # Compile disabled for now. Does not yield any performance improvements
         self.device = torch.device(device)
         self.actor = actor.to(self.device)
-        self.actor = torch.compile(self.actor)
+        # self.actor = torch.compile(self.actor)
         self.critic = critic.to(self.device)
-        self.critic = torch.compile(self.critic)
+        # self.critic = torch.compile(self.critic)
 
     def action(self, obs: FloatTensor) -> FloatTensor:
         return self.actor(obs)
