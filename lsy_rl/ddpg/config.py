@@ -1,23 +1,24 @@
 from __future__ import annotations
 
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import TypeVar, Callable
-from typing import Any
 import inspect
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, TypeVar
 
-import torch
+import gymnasium
 import numpy as np
-from lsy_rl.ddpg.policy import DDPGActor, DDPGCritic
+import torch
+
 from lsy_rl.core.replay_buffer import ReplayBuffer, SimpleReplayBuffer, replay_buffer_cls
-from lsy_rl.core.transforms import IdentityTF, Transform, ChainedTF, transform_cls
+from lsy_rl.core.transforms import ChainedTF, IdentityTF, Transform, transform_cls
+from lsy_rl.ddpg.policy import DDPGActor, DDPGCritic
 
 T = TypeVar("T")
 
 
-def maybe_str_to_cls(value: T | str,
-                     factory: Callable[[str], T] | None = None,
-                     expected_type: T | None = None) -> T:
+def maybe_str_to_cls(
+    value: T | str, factory: Callable[[str], T] | None = None, expected_type: T | None = None
+) -> T:
     if not isinstance(value, type):
         if isinstance(value, str) and factory is not None:
             return factory(value)
@@ -55,7 +56,6 @@ def convert_transforms(transforms: list[Transform | dict] | Transform) -> Transf
 
 @dataclass
 class DDPGConfig:
-
     env: EnvConfig
     rollout: RolloutConfig
     train: TrainConfig
@@ -65,7 +65,6 @@ class DDPGConfig:
 
 @dataclass
 class EnvConfig:
-
     name: str
     seed: int | None = None
     kwargs: dict[str, Any] = field(default_factory=lambda: {"num_envs": 1})
@@ -73,30 +72,31 @@ class EnvConfig:
 
 @dataclass
 class RolloutConfig:
-
     max_samples: int
     obs_transform: Transform = field(default_factory=IdentityTF)
     action_transform: Transform = field(default_factory=IdentityTF)
     replay_buffer_cls: type[ReplayBuffer] = SimpleReplayBuffer
-    replay_buffer_kwargs: dict[str, Any] = field(default_factory=lambda: {
-        "max_size": 1_000_000,
-        "num_envs": 1
-    })
+    replay_buffer_kwargs: dict[str, Any] = field(
+        default_factory=lambda: {"max_size": 1_000_000, "num_envs": 1}
+    )
+    env: gymnasium.Env | None = None
     success_criteria: Callable[[list[float]], np.ndarray] | None = None
 
     def __post_init__(self):
-        self.replay_buffer_cls = maybe_str_to_cls(self.replay_buffer_cls, replay_buffer_cls,
-                                                  ReplayBuffer)
-        check_kwargs(self.replay_buffer_kwargs,
-                     self.replay_buffer_cls,
-                     ignore=["num_envs", "device"])
+        self.replay_buffer_cls = maybe_str_to_cls(
+            self.replay_buffer_cls, replay_buffer_cls, ReplayBuffer
+        )
+        if "reward_fn" in self.replay_buffer_kwargs:
+            self.replay_buffer_kwargs["reward_fn"] = self.env.unwrapped.compute_reward
+        check_kwargs(
+            self.replay_buffer_kwargs, self.replay_buffer_cls, ignore=["num_envs", "device"]
+        )
         self.obs_transform = convert_transforms(self.obs_transform)
         self.action_transform = convert_transforms(self.action_transform)
 
 
 @dataclass
 class TrainConfig:
-
     freq: int = 1
     steps: int = 1
     actor_freq: int = 1
@@ -133,7 +133,6 @@ class TrainConfig:
 
 @dataclass
 class EvalConfig:
-
     freq: int
     steps: int
     obs_transform: Transform = field(default_factory=IdentityTF)
@@ -147,7 +146,6 @@ class EvalConfig:
 
 @dataclass
 class CheckpointConfig:
-
     freq: int | None = None
     path: Path | None = None
 
@@ -155,5 +153,5 @@ class CheckpointConfig:
         if self.freq is not None and self.path is None:
             raise ValueError("If 'checkpoint_freq' is not None, 'checkpoint_path' must be set")
         if isinstance(self.path, str):
-            self.path = Path(self.path)
+            self.path = Path(self.path).absolute()
             assert self.path.is_absolute(), "Checkpoint path must be an absolute path"

@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import logging
-from abc import ABC, abstractmethod
 import random
-from typing import Callable
 import sys
+from abc import ABC, abstractmethod
+from typing import Callable
 
-import torch
-from torch import IntTensor
-from tensordict import TensorDict
 import numpy as np
+import torch
+from tensordict import TensorDict
+from torch import IntTensor
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +19,7 @@ def replay_buffer_cls(name: str) -> type[ReplayBuffer]:
 
 
 class ReplayBuffer(ABC):
-
-    def __init__(self):
-        ...
+    def __init__(self): ...
 
     @abstractmethod
     def add(self, obs, action, reward, next_obs, terminated, truncated):
@@ -49,12 +47,13 @@ class ReplayBuffer(ABC):
 
 
 class SimpleReplayBuffer(ReplayBuffer):
-
-    def __init__(self,
-                 num_envs: int,
-                 max_size: int,
-                 device: torch.device = torch.device("cpu"),
-                 seed: int | None = None):
+    def __init__(
+        self,
+        num_envs: int,
+        max_size: int,
+        device: torch.device = torch.device("cpu"),
+        seed: int | None = None,
+    ):
         super().__init__()
         self.num_envs = num_envs
         self.max_size = max_size
@@ -123,20 +122,23 @@ class SimpleReplayBuffer(ReplayBuffer):
 
 
 class VectorReplayBuffer(ReplayBuffer):
-
-    def __init__(self,
-                 num_envs: int,
-                 max_size: int,
-                 device: torch.device = torch.device("cpu"),
-                 seed: int | None = None):
+    def __init__(
+        self,
+        num_envs: int,
+        max_size: int,
+        device: torch.device = torch.device("cpu"),
+        seed: int | None = None,
+    ):
         super().__init__()
         self.num_envs = num_envs
         assert max_size > self.num_envs, "Buffer size must be larger than the number of envs"
         self.bufflen = max_size // self.num_envs
         if max_size % self.num_envs != 0:
-            logger.warning(f"Buffer size ({max_size}) is not a multiple of the number of envs"
-                           f" ({self.num_envs}). Buffer size reduced to "
-                           f"{self.bufflen * self.num_envs}.")
+            logger.warning(
+                f"Buffer size ({max_size}) is not a multiple of the number of envs"
+                f" ({self.num_envs}). Buffer size reduced to "
+                f"{self.bufflen * self.num_envs}."
+            )
         # Allocate buffers
         self.device = device
         self.buffer = TensorDict({}, batch_size=(self.num_envs, self.bufflen), device=device)
@@ -169,19 +171,22 @@ class VectorReplayBuffer(ReplayBuffer):
         self.buffer[v_idx, idx] = sample
         # Update the helper indices
         self._idx[v_idx] = (self._idx[v_idx] + num_samples[v_idx]) % self.bufflen
-        self._maxidx[v_idx] = torch.min(self._maxidx[v_idx] + num_samples[v_idx],
-                                        torch.ones_like(self._maxidx) * (self.bufflen - 1))
+        self._maxidx[v_idx] = torch.min(
+            self._maxidx[v_idx] + num_samples[v_idx],
+            torch.ones_like(self._maxidx) * (self.bufflen - 1),
+        )
 
     def _allocate_buffers(self, sample: TensorDict):
         for key, val in sample.items():
             if key not in self.buffer.keys():
                 if isinstance(val, torch.Tensor):
-                    self.buffer[key] = torch.zeros((self.num_envs, self.bufflen, *val.shape[1:]),
-                                                   dtype=val.dtype)
+                    self.buffer[key] = torch.zeros(
+                        (self.num_envs, self.bufflen, *val.shape[1:]), dtype=val.dtype
+                    )
                 elif isinstance(val, TensorDict):
-                    self.buffer[key] = TensorDict({},
-                                                  batch_size=(self.num_envs, self.bufflen),
-                                                  device=self.device)
+                    self.buffer[key] = TensorDict(
+                        {}, batch_size=(self.num_envs, self.bufflen), device=self.device
+                    )
                 else:
                     raise TypeError(f"Unsupported type {type(val)}")
 
@@ -227,14 +232,15 @@ class VectorReplayBuffer(ReplayBuffer):
 
 
 class HerVectorReplayBuffer(VectorReplayBuffer):
-
-    def __init__(self,
-                 num_envs: int,
-                 max_size: int,
-                 reward_fn: Callable,
-                 p_her: float = 0.8,
-                 device: torch.device = torch.device("cpu"),
-                 seed: int | None = None):
+    def __init__(
+        self,
+        num_envs: int,
+        max_size: int,
+        reward_fn: Callable,
+        p_her: float = 0.8,
+        device: torch.device = torch.device("cpu"),
+        seed: int | None = None,
+    ):
         super().__init__(num_envs, max_size, device, seed)
         self.reward_fn = reward_fn
         self.p_her = p_her
@@ -245,9 +251,9 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
         # steps to -1
         self._idx = 0
         self._maxidx = -1
-        self._remaining_steps = torch.empty((num_envs, max_size // num_envs),
-                                            dtype=int,
-                                            device=self.device)
+        self._remaining_steps = torch.empty(
+            (num_envs, max_size // num_envs), dtype=int, device=self.device
+        )
         self._remaining_steps[:] = -1
         self._running_steps = torch.zeros(num_envs, dtype=int, device=self.device)
         self._invalid_idx = torch.zeros((num_envs, 2), dtype=int, device=self.device)
@@ -276,8 +282,9 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
         # for the current and all previous samples
         for i in torch.nonzero(done).flatten():
             # +1 because we overwrite to 0 inclusive
-            ep_idx = (torch.arange(-self._running_steps[i] + 1, 1, device=self.device) +
-                      idx) % self.bufflen
+            ep_idx = (
+                torch.arange(-self._running_steps[i] + 1, 1, device=self.device) + idx
+            ) % self.bufflen
             # Create a descending range of remaining steps to the end of the episode
             steps = torch.arange(self._running_steps[i] - 1, -1, -1, device=self.device)
             self._remaining_steps[i, ep_idx] = steps
@@ -290,7 +297,7 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
 
     def sample(self, batch_size: int) -> TensorDict[torch.Tensor]:
         """Sample a batch of hindsight experience transitions from the buffer.
-        
+
         Args:
             batch_size: The batch size.
         """
@@ -334,7 +341,7 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
         assert torch.all(self._remaining_steps[v_idx, idx] >= 0)  # Check if all samples are valid
         # Clone the batch and sample HER indices
         batch = self.buffer[v_idx, idx].clone()
-        her_idx = torch.randperm(batch_size, device=self.device)[:int(batch_size * self.p_her)]
+        her_idx = torch.randperm(batch_size, device=self.device)[: int(batch_size * self.p_her)]
         # Compute the random offset for the HER samples
         # Add +1 because we later multiply with torch.rand, which samples from [0, 1), so the final
         # offset is in the range [0, offset_interval)

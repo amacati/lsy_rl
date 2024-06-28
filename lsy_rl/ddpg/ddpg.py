@@ -1,39 +1,46 @@
 import logging
-from types import SimpleNamespace
-import time
 import random
-from pathlib import Path
+import time
 from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
 
-import torch
+import gymnasium
 import numpy as np
+import torch
 from gymnasium.vector import VectorEnv
 
 from lsy_rl.core import Algorithm
-from lsy_rl.core.logger import Logger, EmptyLogger
-from lsy_rl.wrappers.wrapper import wrap_env
-from lsy_rl.ddpg.config import DDPGConfig, EnvConfig, TrainConfig, EvalConfig, CheckpointConfig
-from lsy_rl.ddpg.config import RolloutConfig
+from lsy_rl.core.logger import EmptyLogger, Logger
+from lsy_rl.ddpg.config import (
+    CheckpointConfig,
+    DDPGConfig,
+    EnvConfig,
+    EvalConfig,
+    RolloutConfig,
+    TrainConfig,
+)
 from lsy_rl.ddpg.policy import DDPGPolicy
+from lsy_rl.wrappers.wrapper import wrap_env
 
 logger = logging.getLogger(__name__)
 
 
 class DDPG(Algorithm):
-
     num_logs: int = 200
 
-    def __init__(self,
-                 env: VectorEnv,
-                 eval_env: VectorEnv,
-                 config: SimpleNamespace,
-                 logger: Logger = EmptyLogger(),
-                 seed: int | None = None):
+    def __init__(
+        self,
+        env: VectorEnv,
+        eval_env: VectorEnv,
+        config: SimpleNamespace,
+        logger: Logger = EmptyLogger(),
+        seed: int | None = None,
+    ):
         super().__init__()
         # torch.set_float32_matmul_precision('high')  # TODO: Check if this impacts performance
         assert hasattr(env, "num_envs"), "The environment must have a 'num_envs' attribute."
-        self.cfg = self._parse_config(config)
-
+        self.cfg = self._parse_config(config, env)
         # Create wrapped environments so that the observations and actions are always Tensors
         self.env = wrap_env(env, device=self.cfg.train.device)
         self.eval_env = wrap_env(eval_env, device=self.cfg.train.device)
@@ -54,10 +61,12 @@ class DDPG(Algorithm):
         self.cfg.train.policy_kwargs["critic"] = critic
         self.policy = DDPGPolicy(**self.cfg.train.policy_kwargs, device=self.cfg.train.device)
         # Initialize the optimizers
-        self.actor_optimizer = torch.optim.Adam(self.policy.actor.parameters(),
-                                                lr=self.cfg.train.actor_lr)
-        self.critic_optimizer = torch.optim.Adam(self.policy.critic.parameters(),
-                                                 lr=self.cfg.train.critic_lr)
+        self.actor_optimizer = torch.optim.Adam(
+            self.policy.actor.parameters(), lr=self.cfg.train.actor_lr
+        )
+        self.critic_optimizer = torch.optim.Adam(
+            self.policy.critic.parameters(), lr=self.cfg.train.critic_lr
+        )
         # Put transforms on the same device as the policy
         device = self.cfg.train.device
         self.cfg.rollout.action_transform = self.cfg.rollout.action_transform.to(device)
@@ -68,7 +77,7 @@ class DDPG(Algorithm):
         # Initialize the replay buffer
         self.cfg.rollout.replay_buffer_kwargs |= {
             "num_envs": self.env.num_envs,
-            "device": self.cfg.train.device
+            "device": self.cfg.train.device,
         }
         buffer_cls = self.cfg.rollout.replay_buffer_cls
         self.buffer = buffer_cls(**self.cfg.rollout.replay_buffer_kwargs)
@@ -79,13 +88,8 @@ class DDPG(Algorithm):
             "rewards": torch.zeros(self.env.num_envs, device=self.cfg.train.device),
             "steps": torch.zeros(self.env.num_envs, device=self.cfg.train.device),
             "log_freq": max(1, self.cfg.rollout.max_samples // self.num_logs),
-            "log": {
-                "ep_steps": 0,
-                "ep_reward": 0,
-                "ep_count": 0,
-                "last_rewards": []
-            },
-            "start_time": time.time()
+            "log": {"ep_steps": 0, "ep_reward": 0, "ep_count": 0, "last_rewards": []},
+            "start_time": time.time(),
         }
         self.train_info = {
             "num_samples": 0,
@@ -94,10 +98,10 @@ class DDPG(Algorithm):
                 "actor_loss": 0,
                 "critic_loss": 0,
                 "actor_steps_since_log": 0,
-                "critic_steps_since_log": 0
-            }
+                "critic_steps_since_log": 0,
+            },
         }
-        num_trainings = (self.cfg.rollout.max_samples // self.cfg.train.freq)
+        num_trainings = self.cfg.rollout.max_samples // self.cfg.train.freq
         total_train_steps = num_trainings * self.cfg.train.steps
         self.train_info["log_freq"] = max(1, total_train_steps // self.num_logs)
         self.eval_info = {
@@ -186,8 +190,8 @@ class DDPG(Algorithm):
             self.rollout_info["rewards"] += sample["reward"]
             # If any of the environments are terminated or truncated, log the episode statistics
             if torch.any(done):
-                self.rollout_info["log"]["ep_steps"] += (self.rollout_info["steps"][done].sum())
-                self.rollout_info["log"]["ep_reward"] += (self.rollout_info["rewards"][done].sum())
+                self.rollout_info["log"]["ep_steps"] += self.rollout_info["steps"][done].sum()
+                self.rollout_info["log"]["ep_reward"] += self.rollout_info["rewards"][done].sum()
                 self.rollout_info["log"]["ep_count"] += len(done)
                 self.rollout_info["log"]["last_rewards"].extend(sample["reward"][done].tolist())
                 self.rollout_info["steps"][done] = 0
@@ -229,8 +233,9 @@ class DDPG(Algorithm):
                 critic_loss = (q_target - q_expected).pow(2).mean()
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.policy.critic.parameters(),
-                                               self.cfg.train.grad_clip)
+                torch.nn.utils.clip_grad_norm_(
+                    self.policy.critic.parameters(), self.cfg.train.grad_clip
+                )
                 self.critic_optimizer.step()
                 self.train_info["log"]["critic_loss"] += critic_loss.detach()
                 self.train_info["log"]["critic_steps_since_log"] += 1
@@ -246,8 +251,9 @@ class DDPG(Algorithm):
 
                 self.actor_optimizer.zero_grad()
                 actor_loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.policy.actor.parameters(),
-                                               self.cfg.train.grad_clip)
+                torch.nn.utils.clip_grad_norm_(
+                    self.policy.actor.parameters(), self.cfg.train.grad_clip
+                )
                 self.actor_optimizer.step()
                 self.train_info["log"]["actor_loss"] += actor_loss.detach()
                 self.train_info["log"]["actor_steps_since_log"] += 1
@@ -309,8 +315,9 @@ class DDPG(Algorithm):
         self.buffer.save(self.checkpoint_path / "buffer.pt")
         torch.save(self.actor_optimizer.state_dict(), self.checkpoint_path / "actor_opt.pt")
         torch.save(self.critic_optimizer.state_dict(), self.checkpoint_path / "critic_opt.pt")
-        torch.save(self.cfg.rollout.obs_transform.state_dict(),
-                   self.checkpoint_path / "obs_transform.pt")
+        torch.save(
+            self.cfg.rollout.obs_transform.state_dict(), self.checkpoint_path / "obs_transform.pt"
+        )
         self.checkpoint_info["num_samples"] = self.rollout_info["num_samples"]
 
     def _next_required_samples(self):
@@ -342,11 +349,12 @@ class DDPG(Algorithm):
             if ep_count > 0:
                 data = {
                     "rollout/ep_steps": ep_steps / ep_count,
-                    "rollout/ep_reward": ep_reward / ep_count
+                    "rollout/ep_reward": ep_reward / ep_count,
                 }
                 if self.cfg.rollout.success_criteria is not None:
                     success = self.cfg.rollout.success_criteria(
-                        self.rollout_info["log"]["last_rewards"])
+                        self.rollout_info["log"]["last_rewards"]
+                    )
                     data["rollout/success_rate"] = success.mean()
                 self.logger.log(data, step=self.rollout_info["num_samples"])
                 self.rollout_info["log"]["ep_steps"] = 0
@@ -357,7 +365,7 @@ class DDPG(Algorithm):
             data = {
                 "time/time_elapsed": elapsed_time,
                 "time/total_timesteps": self.rollout_info["num_samples"],
-                "time/fps": self.rollout_info["num_samples"] / elapsed_time
+                "time/fps": self.rollout_info["num_samples"] / elapsed_time,
             }
             self.logger.log(data, step=self.rollout_info["num_samples"])
 
@@ -365,13 +373,17 @@ class DDPG(Algorithm):
         if self.train_info["num_train_steps"] % self.train_info["log_freq"] == 0:
             data = {}
             if self.train_info["log"]["actor_steps_since_log"] > 0:
-                data["train/actor_loss"] = (self.train_info["log"]["actor_loss"] /
-                                            self.train_info["log"]["actor_steps_since_log"])
+                data["train/actor_loss"] = (
+                    self.train_info["log"]["actor_loss"]
+                    / self.train_info["log"]["actor_steps_since_log"]
+                )
                 self.train_info["log"]["actor_loss"] = 0
                 self.train_info["log"]["actor_steps_since_log"] = 0
             if self.train_info["log"]["critic_steps_since_log"] > 0:
-                data["train/critic_loss"] = (self.train_info["log"]["critic_loss"] /
-                                             self.train_info["log"]["critic_steps_since_log"])
+                data["train/critic_loss"] = (
+                    self.train_info["log"]["critic_loss"]
+                    / self.train_info["log"]["critic_steps_since_log"]
+                )
                 self.train_info["log"]["critic_loss"] = 0
                 self.train_info["log"]["critic_steps_since_log"] = 0
             if data:
@@ -400,19 +412,20 @@ class DDPG(Algorithm):
             if self.separate_eval_env:  # Only reset if the eval env is not also the train env
                 self.eval_env.reset(seed=eval_env_seed)
 
-    def _parse_config(self, config: SimpleNamespace) -> DDPGConfig:
-        # Create env config
-        env_config = EnvConfig(**vars(config.env))
-        rollout_config = RolloutConfig(**vars(config.rollout))
-        train_config = TrainConfig(**vars(config.train))
-        eval_config = EvalConfig(**vars(config.eval))
-        checkpoint_config = CheckpointConfig(**vars(config.checkpoint))
+    def _parse_config(self, config: SimpleNamespace, env: gymnasium.vector.VectorEnv) -> DDPGConfig:
+        env_config = EnvConfig(**config.env)
+        rollout_config = RolloutConfig(**config.rollout, env=env.envs[0])
+        train_config = TrainConfig(**config.train)
+        eval_config = EvalConfig(**config.eval)
+        checkpoint_config = CheckpointConfig(**config.checkpoint)
 
         # Check if the config is valid
         for cfg in (train_config, eval_config, checkpoint_config):
             if cfg.freq is not None and cfg.freq % env_config.kwargs["num_envs"] != 0:
-                raise ValueError(f"Config {cfg} frequency ({cfg.freq}) must be multiple of "
-                                 f"'num_envs' ({env_config.kwargs['num_envs']}).")
+                raise ValueError(
+                    f"Config {cfg} frequency ({cfg.freq}) must be multiple of "
+                    f"'num_envs' ({env_config.kwargs['num_envs']})."
+                )
         return DDPGConfig(env_config, rollout_config, train_config, eval_config, checkpoint_config)
 
     def _unique_run_folder(self, save_dir: Path | None) -> Path | None:
