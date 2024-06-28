@@ -1,10 +1,13 @@
 import logging
+import sys
+import tomllib
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
-import sys
 import torch
 import torch.nn as nn
+from munch import Munch, munchify
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +30,6 @@ def polyak_update_(target_net: nn.Module, net: nn.Module, tau: float):
 
 
 def module_type_from_string(module_name: str) -> Callable[[str], type]:
-
     def _module_type_from_string(name: str) -> type:
         return getattr(sys.modules[module_name], name)
 
@@ -71,3 +73,9 @@ def torchify_dtype(dtype: np.dtype) -> torch.dtype:
             return torch.complex128
         case _:
             raise ValueError(f"Unsupported dtype {dtype}")
+
+
+def load_config(path: Path) -> Munch:
+    with open(path, "rb") as f:
+        config = tomllib.load(f)
+    return munchify(config)

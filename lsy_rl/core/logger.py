@@ -1,45 +1,39 @@
+import copy
+import json
 from abc import ABC, abstractmethod
 from pathlib import Path
-import json
 from typing import Mapping
+
 import numpy as np
 import torch
-import copy
+from sklearn.utils import Bunch
 
-from lsy_rl.utils.wandb import WandBConfig, load_config
+from lsy_rl.utils import load_config
 
 
 class Logger(ABC):
-
     def __init__(self):
         super().__init__()
 
     @abstractmethod
-    def log(self, data, step: int, flush: bool = False):
-        ...
+    def log(self, data, step: int, flush: bool = False): ...
 
     @abstractmethod
-    def flush(self):
-        ...
+    def flush(self): ...
 
-    def stop(self):
-        ...
+    def stop(self): ...
 
 
 class EmptyLogger(Logger):
-
     def __init__(self):
         super().__init__()
 
-    def log(self, data, step: int, flush: bool = False):
-        ...
+    def log(self, data, step: int, flush: bool = False): ...
 
-    def flush(self):
-        ...
+    def flush(self): ...
 
 
 class LoggerList(Logger):
-
     def __init__(self, loggers: list):
         super().__init__()
         assert all([isinstance(logger, Logger) for logger in loggers])
@@ -63,7 +57,6 @@ class LoggerList(Logger):
 
 
 class ConsoleLogger(Logger):
-
     def __init__(self, filter: str | None = None):
         super().__init__()
         self._log = dict()
@@ -91,7 +84,6 @@ class ConsoleLogger(Logger):
 
 
 class FileLogger(Logger):
-
     def __init__(self, path: Path):
         super().__init__()
         if not path.parent.exists():
@@ -106,7 +98,7 @@ class FileLogger(Logger):
 
     def flush(self):
         log = self.jsonify(copy.deepcopy(self._log))
-        with open(self.path, 'w') as f:
+        with open(self.path, "w") as f:
             json.dump(log, f)
 
     def stop(self):
@@ -122,12 +114,13 @@ class FileLogger(Logger):
 
 
 class WandBLogger(Logger):
-
-    def __init__(self,
-                 wandb_api_key: str,
-                 save_path: Path,
-                 config: WandBConfig | None = None,
-                 config_path: Path | None = None):
+    def __init__(
+        self,
+        wandb_api_key: str,
+        save_path: Path,
+        config: Bunch | None = None,
+        config_path: Path | None = None,
+    ):
         assert config is not None or config_path is not None, "Must provide config or config_path."
         super().__init__()
         import wandb  # Import on class init to avoid unnecessary non-optional dependencies
@@ -136,11 +129,13 @@ class WandBLogger(Logger):
         config = config or load_config(config_path)
         self._check_wandb_config(config)
         wandb.login(key=wandb_api_key)
-        self.run = wandb.init(project=config.wandb.project,
-                              entity=config.wandb.entity,
-                              group=config.wandb.group,
-                              config=config.asdict(),
-                              dir=save_path)
+        self.run = wandb.init(
+            project=config.wandb.project,
+            entity=config.wandb.entity,
+            group=config.wandb.group,
+            config=config.asdict(),
+            dir=save_path,
+        )
 
     def log(self, data, step: int, flush: bool = False):
         self.run.log(data, step=step, commit=flush)
@@ -151,9 +146,9 @@ class WandBLogger(Logger):
     def stop(self):
         self.run.finish()
 
-    def _check_wandb_config(self, config: WandBConfig):
-        if not hasattr(config, "wandb"):
+    def _check_wandb_config(self, config: Bunch):
+        if "wandb" not in config:
             raise AttributeError("WandB config missing 'wandb' namespace.")
         for attr in ["project", "entity", "group"]:
-            if not hasattr(config.wandb, attr):
+            if attr not in config.wandb:
                 raise AttributeError(f"WandB config missing attribute '{attr}' in wandb namespace.")
