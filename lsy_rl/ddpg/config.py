@@ -150,6 +150,8 @@ class CheckpointConfig:
     path: Path | None = None
 
     def __post_init__(self):
+        if self.freq is False:  # TOML can't represent None, use False instead and convert to None
+            self.freq = None
         if self.freq is not None and self.path is None:
             raise ValueError("If 'checkpoint_freq' is not None, 'checkpoint_path' must be set")
         if isinstance(self.path, str):

@@ -415,7 +415,7 @@ class DDPG(Algorithm):
 
     def _parse_config(self, config: SimpleNamespace, env: gymnasium.vector.VectorEnv) -> DDPGConfig:
         env_config = EnvConfig(**config.env)
-        rollout_config = RolloutConfig(**config.rollout, env=env.envs[0])
+        rollout_config = RolloutConfig(**config.rollout, env=env.env_fns[0]())
         train_config = TrainConfig(**config.train)
         eval_config = EvalConfig(**config.eval)
         checkpoint_config = CheckpointConfig(**config.checkpoint)

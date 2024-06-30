@@ -1,11 +1,11 @@
-from typing import Callable, Any
 import logging
-
-from gymnasium import Env
+from typing import Any
 
 import torch
-from torch import Tensor
+from gymnasium import Env
 from tensordict import TensorDict
+from torch import Tensor
+
 from lsy_rl.wrappers.tensordict_wrapper import DefaultTensorDictWrapper
 
 logger = logging.getLogger(__name__)
@@ -19,8 +19,9 @@ class OrbitWrapper(DefaultTensorDictWrapper):
     the 'final_observation' key.
     """
 
-    def __init__(self, env: Env, max_episode_steps: int,
-                 device: torch.device = torch.device("cpu")):
+    def __init__(
+        self, env: Env, max_episode_steps: int, device: torch.device = torch.device("cpu")
+    ):
         super().__init__(env, device)
         self._num_steps = 0
         self.max_episode_steps = max_episode_steps
@@ -39,10 +40,9 @@ class OrbitWrapper(DefaultTensorDictWrapper):
             sample["next_obs"] = new_sample["obs"]
         return sample
 
-    def reset(self,
-              *,
-              seed: list[int] | None = None,
-              options: dict[str, Any] | None = None) -> tuple[Tensor, dict[str, Any]]:
+    def reset(
+        self, *, seed: list[int] | None = None, options: dict[str, Any] | None = None
+    ) -> tuple[Tensor, dict[str, Any]]:
         """Patch Orbit's reset by taking an additional step in the environment.
 
         IsaacSim does not update its buffers correctly on resets. As a consequence, the reset

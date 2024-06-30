@@ -1,27 +1,34 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import torch
 import numpy as np
-from gymnasium.vector import VectorEnv
+import torch
 from gymnasium import spaces
+from gymnasium.vector import VectorEnv
 
 from lsy_rl.core import Algorithm
 from lsy_rl.core.logger import Logger
+from lsy_rl.dqn.config import (
+    CheckpointConfig,
+    DQNConfig,
+    EnvConfig,
+    EvalConfig,
+    RolloutConfig,
+    TrainConfig,
+)
+from lsy_rl.dqn.policy import DQNPolicy
 from lsy_rl.utils import space_info
 from lsy_rl.wrappers.tensordict_wrapper import TensorDictWrapper
-from lsy_rl.dqn.config import DQNConfig, EnvConfig, TrainConfig, EvalConfig, CheckpointConfig
-from lsy_rl.dqn.config import RolloutConfig
-from lsy_rl.dqn.policy import DQNPolicy
 
 
 class DQN(Algorithm):
-
-    def __init__(self,
-                 env: VectorEnv,
-                 eval_env: VectorEnv,
-                 config: SimpleNamespace,
-                 logger: Logger | None = None):
+    def __init__(
+        self,
+        env: VectorEnv,
+        eval_env: VectorEnv,
+        config: SimpleNamespace,
+        logger: Logger | None = None,
+    ):
         super().__init__()
         assert hasattr(env, "num_envs"), "The environment must have a 'num_envs' attribute."
         self.config = self._parse_config(config)
@@ -31,8 +38,9 @@ class DQN(Algorithm):
         # Check if the action space is multi-discrete. Discrete action spaces are converted to
         # multi-discrete for vectorized environments, and we only support vectorized environments
         if not isinstance(self.env.action_space, spaces.MultiDiscrete):
-            raise TypeError(("The action space must be multi-discrete, is type "
-                             f"{self.env.action_space}."))
+            raise TypeError(
+                ("The action space must be multi-discrete, is type " f"{self.env.action_space}.")
+            )
         assert all(nvec == self.env.action_space.nvec[0] for nvec in self.env.action_space.nvec)
         self.logger = logger
 
@@ -247,16 +255,29 @@ class DQN(Algorithm):
         # Check if the config is valid
         assert train_config.freq > 0, "The training frequency must be greater than 0."
         if not train_config.freq % env_config.kwargs["num_envs"] == 0:
-            raise ValueError((f"The train frequency ({train_config.freq}) must be divisible by "
-                              f" 'num_envs' ({env_config.num_envs})."))
+            raise ValueError(
+                (
+                    f"The train frequency ({train_config.freq}) must be divisible by "
+                    f" 'num_envs' ({env_config.num_envs})."
+                )
+            )
         if not eval_config.freq % env_config.kwargs["num_envs"] == 0:
-            raise ValueError((f"The 'eval_freq' ({eval_config.freq}) must be divisible by "
-                              f"'num_envs' ({env_config.num_envs})."))
+            raise ValueError(
+                (
+                    f"The 'eval_freq' ({eval_config.freq}) must be divisible by "
+                    f"'num_envs' ({env_config.num_envs})."
+                )
+            )
         if checkpoint_config.freq is not None:
             if checkpoint_config.freq is None:
-                raise ValueError("If 'checkpoint_freq' is not None, 'checkpoint_path' must be "
-                                 "specified.")
+                raise ValueError(
+                    "If 'checkpoint_freq' is not None, 'checkpoint_path' must be " "specified."
+                )
             if not checkpoint_config.freq % env_config.kwargs["num_envs"] == 0:
-                raise ValueError((f"The 'checkpoint_freq' ({checkpoint_config.freq}) must be "
-                                  f"divisible by 'num_envs' ({env_config.num_envs})."))
+                raise ValueError(
+                    (
+                        f"The 'checkpoint_freq' ({checkpoint_config.freq}) must be "
+                        f"divisible by 'num_envs' ({env_config.num_envs})."
+                    )
+                )
         return DQNConfig(env_config, rollout_config, train_config, eval_config, checkpoint_config)

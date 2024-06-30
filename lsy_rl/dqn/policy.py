@@ -1,35 +1,42 @@
-from abc import abstractmethod, ABC
+from abc import ABC, abstractmethod
+from pathlib import Path
 
 import torch
-from torch import FloatTensor, IntTensor
 import torch.nn as nn
+from torch import FloatTensor, IntTensor
 
 from lsy_rl.core.policy import Policy
-from pathlib import Path
 
 
 class DQNet(ABC, nn.Module):
-
     def __init__(self):
         super().__init__()
 
     @abstractmethod
-    def get_network_and_target(self) -> tuple[nn.Module, nn.Module]:
-        ...
+    def get_network_and_target(self) -> tuple[nn.Module, nn.Module]: ...
 
 
 class DoubleDQNet(DQNet):
-
     def __init__(self, obs_dim: int, action_dim: int):
         super().__init__()
-        self.networks = nn.ModuleDict({
-            "dqn1":
-                nn.Sequential(nn.Linear(obs_dim, 128), nn.ReLU(), nn.Linear(128, 128), nn.ReLU(),
-                              nn.Linear(128, action_dim)),
-            "dqn2":
-                nn.Sequential(nn.Linear(obs_dim, 128), nn.ReLU(), nn.Linear(128, 128), nn.ReLU(),
-                              nn.Linear(128, action_dim))
-        })
+        self.networks = nn.ModuleDict(
+            {
+                "dqn1": nn.Sequential(
+                    nn.Linear(obs_dim, 128),
+                    nn.ReLU(),
+                    nn.Linear(128, 128),
+                    nn.ReLU(),
+                    nn.Linear(128, action_dim),
+                ),
+                "dqn2": nn.Sequential(
+                    nn.Linear(obs_dim, 128),
+                    nn.ReLU(),
+                    nn.Linear(128, 128),
+                    nn.ReLU(),
+                    nn.Linear(128, action_dim),
+                ),
+            }
+        )
 
     def forward(self, obs: FloatTensor) -> FloatTensor:
         return (self.networks["dqn1"](obs) + self.networks["dqn2"](obs)) / 2
@@ -41,7 +48,6 @@ class DoubleDQNet(DQNet):
 
 
 class DQNPolicy(Policy):
-
     def __init__(self, network: DQNet, device: str = "cpu"):
         super().__init__()
         self.device = torch.device(device)

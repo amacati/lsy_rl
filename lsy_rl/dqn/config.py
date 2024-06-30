@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import torch
-from typing import Any
-from lsy_rl.dqn.policy import DQNet, DoubleDQNet
+
 from lsy_rl.core.replay_buffer import ReplayBuffer, SimpleReplayBuffer
+from lsy_rl.dqn.policy import DoubleDQNet, DQNet
 
 
 @dataclass
 class DQNConfig:
-
     env: EnvConfig
     rollout: RolloutConfig
     train: TrainConfig
@@ -20,7 +20,6 @@ class DQNConfig:
 
 @dataclass
 class EnvConfig:
-
     name: str
     seed: int | None = None
     kwargs: dict[str, Any] = field(default_factory=dict())
@@ -28,7 +27,6 @@ class EnvConfig:
 
 @dataclass
 class RolloutConfig:
-
     max_samples: int
     replay_buffer_cls: type[ReplayBuffer] = SimpleReplayBuffer
     replay_buffer_kwargs: dict[str, Any] = field(default_factory={"maxsize": 1_000_000})
@@ -37,7 +35,6 @@ class RolloutConfig:
 
 @dataclass
 class TrainConfig:
-
     freq: int
     lr: float = 1e-4
     net_cls: type[DQNet] = DoubleDQNet
@@ -53,13 +50,11 @@ class TrainConfig:
 
 @dataclass
 class EvalConfig:
-
     freq: int
     steps: int
 
 
 @dataclass
 class CheckpointConfig:
-
     freq: int | None = None
     path: str | None = None

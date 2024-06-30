@@ -1,10 +1,10 @@
+import gymnasium
 import pytest
 import torch
-import gymnasium
 from tensordict import merge_tensordicts
 
-from lsy_rl.core.replay_buffer import VectorReplayBuffer, SimpleReplayBuffer
-from lsy_rl.wrappers.tensordict_wrapper import TensorDictWrapper
+from lsy_rl.core.replay_buffer import SimpleReplayBuffer, VectorReplayBuffer
+from lsy_rl.wrappers.tensordict_wrapper import DefaultTensorDictWrapper
 
 
 def cuda_not_available() -> bool:
@@ -13,21 +13,33 @@ def cuda_not_available() -> bool:
 
 @pytest.mark.parametrize(
     "device",
-    (torch.device("cpu"),
-     pytest.param(torch.device("cuda"),
-                  marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."))))
+    (
+        torch.device("cpu"),
+        pytest.param(
+            torch.device("cuda"),
+            marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."),
+        ),
+    ),
+)
 def test_simple_init(device):
     SimpleReplayBuffer(num_envs=2, max_size=10, device=device)
 
 
 @pytest.mark.parametrize(
     "device",
-    (torch.device("cpu"),
-     pytest.param(torch.device("cuda"),
-                  marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."))))
+    (
+        torch.device("cpu"),
+        pytest.param(
+            torch.device("cuda"),
+            marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."),
+        ),
+    ),
+)
 def test_simple_add(device):
     num_envs = 2
-    env = TensorDictWrapper(gymnasium.vector.make("Pendulum-v1", num_envs=num_envs), device=device)
+    env = DefaultTensorDictWrapper(
+        gymnasium.make_vec("Pendulum-v1", num_envs=num_envs), device=device
+    )
     buffer = SimpleReplayBuffer(num_envs=num_envs, max_size=10, device=device)
     obs = env.reset()["obs"]
     action = env.action_space.sample()
@@ -40,13 +52,20 @@ def test_simple_add(device):
 
 @pytest.mark.parametrize(
     "device",
-    (torch.device("cpu"),
-     pytest.param(torch.device("cuda"),
-                  marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."))))
+    (
+        torch.device("cpu"),
+        pytest.param(
+            torch.device("cuda"),
+            marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."),
+        ),
+    ),
+)
 def test_simple_add_wrap(device):
     num_envs, max_size = 2, 11  # Wraps around after 5 steps
     assert max_size % num_envs != 0, "max_size must not be divisible by num_envs for wrap test"
-    env = TensorDictWrapper(gymnasium.vector.make("Pendulum-v1", num_envs=num_envs), device=device)
+    env = DefaultTensorDictWrapper(
+        gymnasium.make_vec("Pendulum-v1", num_envs=num_envs), device=device
+    )
     buffer = SimpleReplayBuffer(num_envs=num_envs, max_size=max_size, device=device)
     obs = env.reset()["obs"]
     action = env.action_space.sample()
@@ -65,21 +84,33 @@ def test_simple_add_wrap(device):
 
 @pytest.mark.parametrize(
     "device",
-    (torch.device("cpu"),
-     pytest.param(torch.device("cuda"),
-                  marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."))))
+    (
+        torch.device("cpu"),
+        pytest.param(
+            torch.device("cuda"),
+            marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."),
+        ),
+    ),
+)
 def test_vector_init(device):
     VectorReplayBuffer(num_envs=2, max_size=10, device=device)
 
 
 @pytest.mark.parametrize(
     "device",
-    (torch.device("cpu"),
-     pytest.param(torch.device("cuda"),
-                  marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."))))
+    (
+        torch.device("cpu"),
+        pytest.param(
+            torch.device("cuda"),
+            marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."),
+        ),
+    ),
+)
 def test_vector_add(device):
     num_envs = 2
-    env = TensorDictWrapper(gymnasium.vector.make("Pendulum-v1", num_envs=num_envs), device=device)
+    env = DefaultTensorDictWrapper(
+        gymnasium.make_vec("Pendulum-v1", num_envs=num_envs), device=device
+    )
     buffer = VectorReplayBuffer(num_envs=num_envs, max_size=10, device=device)
     assert isinstance(env.observation_space.sample(), torch.Tensor)
     sample = env.reset()
@@ -92,12 +123,19 @@ def test_vector_add(device):
 
 @pytest.mark.parametrize(
     "device",
-    (torch.device("cpu"),
-     pytest.param(torch.device("cuda"),
-                  marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."))))
+    (
+        torch.device("cpu"),
+        pytest.param(
+            torch.device("cuda"),
+            marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."),
+        ),
+    ),
+)
 def test_vector_sample(device):
     num_envs = 2
-    env = TensorDictWrapper(gymnasium.vector.make("Pendulum-v1", num_envs=num_envs), device=device)
+    env = DefaultTensorDictWrapper(
+        gymnasium.make_vec("Pendulum-v1", num_envs=num_envs), device=device
+    )
     buffer = VectorReplayBuffer(num_envs=num_envs, max_size=10, device=device)
     assert isinstance(env.observation_space.sample(), torch.Tensor)
     obs = env.reset()["obs"]

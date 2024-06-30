@@ -1,0 +1,16 @@
+[env]
+name = "Pendulum-v0"
+
+[rollout]
+max_samples = 10
+
+[train]
+steps = 2
+batch_size = 2
+
+[eval]
+freq = 5
+steps = 100
+
+[checkpoint]
+freq = false

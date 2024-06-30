@@ -1,34 +1,28 @@
+import copy
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable
-import logging
-import copy
 
-from gymnasium import Env
-from gymnasium import Wrapper
-from tensordict import TensorDict
-
-import torch
-from torch import Tensor
 import numpy as np
+import torch
+from gymnasium import Env, Wrapper
+from tensordict import TensorDict
+from torch import Tensor
 
 logger = logging.getLogger(__name__)
 
 
 class TensorDictWrapper(Wrapper, ABC):
-
     def __init__(self, env: Env):
         super().__init__(env)
 
     @abstractmethod
-    def step(self, action: Tensor) -> TensorDict[str, Tensor]:
-        ...
+    def step(self, action: Tensor) -> TensorDict[str, Tensor]: ...
 
     @abstractmethod
-    def reset(self,
-              *,
-              seed: int | None = None,
-              options: dict[str, Any] | None = None) -> TensorDict:
-        ...
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> TensorDict: ...
 
 
 class DefaultTensorDictWrapper(TensorDictWrapper):
@@ -70,17 +64,18 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
         sample["info"] = self.transform_info(info).clone()
         return sample
 
-    def reset(self,
-              *,
-              seed: int | None = None,
-              options: dict[str, Any] | None = None) -> tuple[Tensor, dict[str, Any]]:
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> tuple[Tensor, dict[str, Any]]:
         obs, info = self.env.reset(seed=seed, options=options)
         sample = TensorDict({}, batch_size=self.num_envs, device=self.device)
         sample["obs"] = self.transform_obs(obs).clone()
         sample["info"] = self.transform_info(info).clone()
         return sample
 
-    def transform_obs(self, obs: np.ndarray | Tensor | dict[str:np.ndarray]) -> Tensor | TensorDict:
+    def transform_obs(
+        self, obs: np.ndarray | Tensor | dict[str : np.ndarray]
+    ) -> Tensor | TensorDict:
         match obs:
             case np.ndarray():
                 return torch.as_tensor(obs, device=self.device)
@@ -112,8 +107,12 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
                 case _:
                     if key not in self._failed_info_keys:
                         self._failed_info_keys.add(key)  # Only log once per key
-                        logger.warning((f"Dropping info key '{key}' with unsupported conversion "
-                                        f"type {type(value)}"))
+                        logger.warning(
+                            (
+                                f"Dropping info key '{key}' with unsupported conversion "
+                                f"type {type(value)}"
+                            )
+                        )
         return TensorDict(info_tf, batch_size=self.num_envs, device=self.device)
 
     def _transform_np_object(self, value: np.ndarray) -> dict[str, np.ndarray] | np.ndarray:
@@ -129,7 +128,6 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
                 raise TypeError(f"Unsupported type {type(value[0])}")
 
     def _patch_space(self, fn: Callable) -> Callable:
-
         def space_wrapper():
             return torch.as_tensor(fn(), device=self.device)
 
@@ -143,6 +141,7 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
         """
         try:
             from omni.isaac.orbit.envs import RLTaskEnv
+
             if isinstance(env.unwrapped, RLTaskEnv):
                 return "torch", torch.device("cuda")
         except ImportError:  # IsaacSim is not installed or not open
