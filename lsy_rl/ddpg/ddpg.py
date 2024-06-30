@@ -21,6 +21,7 @@ from lsy_rl.ddpg.config import (
     TrainConfig,
 )
 from lsy_rl.ddpg.policy import DDPGPolicy
+from lsy_rl.utils.utils import unique_folder
 from lsy_rl.wrappers.wrapper import wrap_env
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ class DDPG(Algorithm):
         }
         self.checkpoint_info = {"num_samples": 0}
         # Don't overwrite the checkpoint path in the config in case it gets reused for multiple runs
-        self.checkpoint_path = self._unique_run_folder(self.cfg.checkpoint.path)
+        self.checkpoint_path = unique_folder(self.cfg.checkpoint.path)
 
     @property
     def stop_condition(self):
@@ -427,26 +428,3 @@ class DDPG(Algorithm):
                     f"'num_envs' ({env_config.kwargs['num_envs']})."
                 )
         return DDPGConfig(env_config, rollout_config, train_config, eval_config, checkpoint_config)
-
-    def _unique_run_folder(self, save_dir: Path | None) -> Path | None:
-        """Create a unique run folder for the current run based on the save folder.
-
-        The run ID is a timestamp in the format 'YYYY_MM_DD_HH_MM'. If the folder already exists, we
-        append a number to the timestamp, e.g. '2021_01_01_12_00_(1)'.
-
-        Args:
-            save_dir: The directory where the run ID folder will be created.
-
-        Returns:
-            A unique run folder.
-        """
-        if save_dir is None:
-            return
-        run_id = datetime.now().strftime("%Y_%m_%d_%H_%M")
-        if (save_dir / run_id).is_dir():
-            t = 1
-            while (save_dir / f"{run_id}_({run_id})").is_dir():
-                t += 1
-            run_id = f"{run_id}_({t})"
-        (save_dir / run_id).mkdir(parents=True, exist_ok=False)
-        return save_dir / run_id

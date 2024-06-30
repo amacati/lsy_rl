@@ -1,16 +1,15 @@
 from pathlib import Path
 
 import torch
-from torch import FloatTensor
 import torch.nn as nn
 from gymnasium.spaces import Box
+from torch import FloatTensor
 
 from lsy_rl.core.policy import Policy
 from lsy_rl.utils import polyak_update_
 
 
 class DDPGActor(nn.Module):
-
     def __init__(self, obs_space: Box, action_space: Box):
         super().__init__()
         assert isinstance(obs_space, Box), f"Invalid obs space type {type(obs_space)}"
@@ -33,19 +32,20 @@ class DDPGActor(nn.Module):
 
 
 class DDPGActorNetwork(nn.Module):
-
     def __init__(self, input_dim: int, output_dim: int):
         super().__init__()
-        self.network = nn.ModuleDict({
-            "input": nn.Linear(input_dim, 256),
-            "f_input": nn.ReLU(),
-            "hidden1": nn.Linear(256, 256),
-            "f_hidden1": nn.ReLU(),
-            "hidden2": nn.Linear(256, 256),
-            "f_hidden2": nn.ReLU(),
-            "output": nn.Linear(256, output_dim),
-            "f_output": nn.Tanh()
-        })
+        self.network = nn.ModuleDict(
+            {
+                "input": nn.Linear(input_dim, 256),
+                "f_input": nn.ReLU(),
+                "hidden1": nn.Linear(256, 256),
+                "f_hidden1": nn.ReLU(),
+                "hidden2": nn.Linear(256, 256),
+                "f_hidden2": nn.ReLU(),
+                "output": nn.Linear(256, output_dim),
+                "f_output": nn.Tanh(),
+            }
+        )
 
     def forward(self, obs: FloatTensor) -> FloatTensor:
         x = obs.float()
@@ -55,7 +55,6 @@ class DDPGActorNetwork(nn.Module):
 
 
 class DDPGCritic(nn.Module):
-
     def __init__(self, obs_space: Box, action_space: Box):
         super().__init__()
         assert isinstance(obs_space, Box), f"Invalid obs space type {type(obs_space)}"
@@ -79,18 +78,19 @@ class DDPGCritic(nn.Module):
 
 
 class DDPGCriticNetwork(nn.Module):
-
     def __init__(self, input_dim: int):
         super().__init__()
-        self.network = nn.ModuleDict({
-            "input": nn.Linear(input_dim, 256),
-            "f_input": nn.ReLU(),
-            "hidden1": nn.Linear(256, 256),
-            "f_hidden1": nn.ReLU(),
-            "hidden2": nn.Linear(256, 256),
-            "f_hidden2": nn.ReLU(),
-            "output": nn.Linear(256, 1)
-        })
+        self.network = nn.ModuleDict(
+            {
+                "input": nn.Linear(input_dim, 256),
+                "f_input": nn.ReLU(),
+                "hidden1": nn.Linear(256, 256),
+                "f_hidden1": nn.ReLU(),
+                "hidden2": nn.Linear(256, 256),
+                "f_hidden2": nn.ReLU(),
+                "output": nn.Linear(256, 1),
+            }
+        )
 
     def forward(self, obs_action: FloatTensor) -> FloatTensor:
         x = obs_action.float()
@@ -100,7 +100,6 @@ class DDPGCriticNetwork(nn.Module):
 
 
 class DDPGPolicy(Policy):
-
     def __init__(self, actor: DDPGActor, critic: DDPGCritic, device: str = "cpu"):
         super().__init__()
         # Compile disabled for now. Does not yield any performance improvements

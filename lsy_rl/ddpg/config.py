@@ -30,7 +30,7 @@ def maybe_str_to_cls(
 def check_kwargs(kwargs: dict[str, Any], cls: type, ignore: list[str] = []):
     assert isinstance(kwargs, dict), "Kwargs must be a dict"
     for x in required_args(cls):
-        if x in ignore:
+        if x in ignore or x in ("args", "kwargs"):
             continue
         if x not in kwargs:
             raise ValueError(f"Missing required argument '{x}' for {cls}")

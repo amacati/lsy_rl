@@ -6,7 +6,7 @@ from typing import Mapping
 
 import numpy as np
 import torch
-from sklearn.utils import Bunch
+from munch import Munch
 
 from lsy_rl.utils import load_config
 
@@ -118,7 +118,7 @@ class WandBLogger(Logger):
         self,
         wandb_api_key: str,
         save_path: Path,
-        config: Bunch | None = None,
+        config: Munch | None = None,
         config_path: Path | None = None,
     ):
         assert config is not None or config_path is not None, "Must provide config or config_path."
@@ -133,7 +133,7 @@ class WandBLogger(Logger):
             project=config.wandb.project,
             entity=config.wandb.entity,
             group=config.wandb.group,
-            config=config.asdict(),
+            config=config,
             dir=save_path,
         )
 
@@ -146,7 +146,7 @@ class WandBLogger(Logger):
     def stop(self):
         self.run.finish()
 
-    def _check_wandb_config(self, config: Bunch):
+    def _check_wandb_config(self, config: Munch):
         if "wandb" not in config:
             raise AttributeError("WandB config missing 'wandb' namespace.")
         for attr in ["project", "entity", "group"]:

@@ -1,3 +1,4 @@
+import datetime
 import logging
 import sys
 import tomllib
@@ -79,3 +80,27 @@ def load_config(path: Path) -> Munch:
     with open(path, "rb") as f:
         config = tomllib.load(f)
     return munchify(config)
+
+
+def unique_folder(dir: Path | None) -> Path | None:
+    """Create a unique folder in the directory.
+
+    The name is a timestamp in the format 'YYYY_MM_DD_HH_MM'. If the folder already exists, we
+    append a number to the timestamp, e.g. '2021_01_01_12_00_(1)'.
+
+    Args:
+        dir: The directory where the folder will be created.
+
+    Returns:
+        A unique folder.
+    """
+    if dir is None:
+        return
+    uid = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M")
+    if (dir / uid).is_dir():
+        t = 1
+        while (dir / f"{uid}_({t})").is_dir():
+            t += 1
+        uid = f"{uid}_({t})"
+    (dir / uid).mkdir(parents=True, exist_ok=False)
+    return dir / uid
