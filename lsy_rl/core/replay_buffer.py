@@ -11,11 +11,11 @@ import torch
 from tensordict import TensorDict
 from torch import IntTensor
 
+from lsy_rl.utils.utils import module_type_from_string
+
 logger = logging.getLogger(__name__)
 
-
-def replay_buffer_cls(name: str) -> type[ReplayBuffer]:
-    return getattr(sys.modules[__name__], name)
+replay_buffer_cls: Callable[[str], type[ReplayBuffer]] = module_type_from_string(__name__)
 
 
 class ReplayBuffer(ABC):

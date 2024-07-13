@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from numbers import Number
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 import torch
 import torch.nn as nn
@@ -12,7 +12,7 @@ from lsy_rl.core.noise import Noise, noise_cls
 from lsy_rl.utils.utils import module_type_from_string
 
 # TODO: Replace with plain transform
-transform_cls: type[Transform] = module_type_from_string(__name__)
+transform_cls: Callable[[str], type[Transform]] = module_type_from_string(__name__)
 
 
 # TODO: Remove transform *args passing in forward

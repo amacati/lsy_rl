@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from numbers import Number
-from typing import Iterable
+from typing import Callable, Iterable
 
 import torch
 import torch.nn as nn
@@ -10,7 +10,7 @@ from torch import Tensor
 
 from lsy_rl.utils.utils import module_type_from_string
 
-noise_cls: type[Noise] = module_type_from_string(__name__)
+noise_cls: Callable[[str], type[Noise]] = module_type_from_string(__name__)
 
 
 class Noise(torch.nn.Module, ABC):
