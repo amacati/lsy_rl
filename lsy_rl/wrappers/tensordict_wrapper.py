@@ -89,7 +89,7 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
     def transform_action(self, action: Tensor) -> Tensor | np.ndarray:
         assert isinstance(action, Tensor), "Action input must be a tensor"
         if self.env_mode == "np":
-            return action.cpu().numpy()
+            return action.detach().cpu().numpy()
         return action.to(self.env_device)
 
     def transform_info(self, info: dict) -> TensorDict:

@@ -62,6 +62,13 @@ class DDPGConfig:
     eval: EvalConfig
     checkpoint: CheckpointConfig
 
+    def __post_init__(self):
+        dev = self.train.device
+        self.rollout.action_transform = self.rollout.action_transform.to(dev)
+        self.rollout.obs_transform = self.rollout.obs_transform.to(dev)
+        self.eval.action_transform = self.eval.action_transform.to(dev)
+        self.eval.obs_transform = self.eval.obs_transform.to(dev)
+
 
 @dataclass
 class EnvConfig:
@@ -126,9 +133,11 @@ class TrainConfig:
         check_kwargs(self.actor_kwargs, self.actor_cls, ignore=["obs_space", "action_space"])
         self.critic_cls = maybe_str_to_cls(self.critic_cls, expected_type=torch.nn.Module)
         check_kwargs(self.critic_kwargs, self.critic_cls, ignore=["obs_space", "action_space"])
-        self.obs_transform = convert_transforms(self.obs_transform)
-        self.action_transform = convert_transforms(self.action_transform)
-        self.target_action_transform = convert_transforms(self.target_action_transform)
+        self.obs_transform = convert_transforms(self.obs_transform).to(self.device)
+        self.action_transform = convert_transforms(self.action_transform).to(self.device)
+        self.target_action_transform = convert_transforms(self.target_action_transform).to(
+            self.device
+        )
 
 
 @dataclass
