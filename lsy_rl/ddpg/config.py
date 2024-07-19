@@ -74,7 +74,8 @@ class DDPGConfig:
 class EnvConfig:
     name: str
     seed: int | None = None
-    kwargs: dict[str, Any] = field(default_factory=lambda: {"num_envs": 1})
+    n_envs: int = 1
+    kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

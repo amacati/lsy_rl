@@ -389,10 +389,10 @@ class DDPG(Algorithm):
 
         # Check if the config is valid
         for cfg in (train_config, eval_config, checkpoint_config):
-            if cfg.freq is not None and cfg.freq % env_config.kwargs["num_envs"] != 0:
+            if cfg.freq is not None and cfg.freq % env_config.n_envs != 0:
                 raise ValueError(
                     f"Config {cfg} frequency ({cfg.freq}) must be multiple of "
-                    f"'num_envs' ({env_config.kwargs['num_envs']})."
+                    f"'n_envs' ({env_config.n_envs})."
                 )
         return DDPGConfig(env_config, rollout_config, train_config, eval_config, checkpoint_config)
 
