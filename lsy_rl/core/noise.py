@@ -18,22 +18,22 @@ class Noise(torch.nn.Module, ABC):
         super().__init__()
         self.params = nn.ParameterDict()
 
-    def reset(self): ...
+    def reset(self):
+        ...
 
     @abstractmethod
-    def __call__(self, x: Tensor) -> Tensor: ...
+    def __call__(self, x: Tensor) -> Tensor:
+        ...
 
 
 class UniformNoise(Noise):
-    def __init__(self, min: Number, max: Number):
+    def __init__(self, min: Number | list[Number], max: Number | list[Number]):
         super().__init__()
-        assert isinstance(min, Number) and isinstance(max, Number), "min and max must be floats"
-        self.params["min"] = nn.Parameter(
-            torch.tensor(min, dtype=torch.float32), requires_grad=False
-        )
-        self.params["diff"] = nn.Parameter(
-            torch.tensor(max - min, dtype=torch.float32), requires_grad=False
-        )
+        assert isinstance(min, (Number, list)), f"min must be a float or list of floats, got {min}"
+        assert isinstance(max, (Number, list)), f"max must be a float or list of floats, got {max}"
+        min, max = torch.tensor(min, dtype=torch.float32), torch.tensor(max, dtype=torch.float32)
+        self.params["min"] = nn.Parameter(min, requires_grad=False)
+        self.params["diff"] = nn.Parameter(max - min, requires_grad=False)
 
     def __call__(self, x: Tensor):
         assert isinstance(x, Tensor), "Input must be a Tensor"
@@ -41,11 +41,13 @@ class UniformNoise(Noise):
 
 
 class NormalNoise(Noise):
-    def __init__(self, mean: Number, std: Number):
+    def __init__(self, mean: Number | list[Number], std: Number | list[Number]):
         super().__init__()
-        assert isinstance(mean, Number) and isinstance(std, Number), "mean and std must be floats"
-        self.params["mean"] = nn.Parameter(torch.tensor(mean), requires_grad=False)
-        self.params["std"] = nn.Parameter(torch.tensor(std), requires_grad=False)
+        assert isinstance(mean, (Number, list)), f"mean must be float or list of floats, got {mean}"
+        assert isinstance(std, (Number, list)), f"std must be float or list of floats, got {std}"
+        mean, std = torch.tensor(mean, dtype=torch.float32), torch.tensor(std, dtype=torch.float32)
+        self.params["mean"] = nn.Parameter(mean, requires_grad=False)
+        self.params["std"] = nn.Parameter(std, requires_grad=False)
 
     def __call__(self, x: Tensor):
         assert isinstance(x, Tensor), "Input must be a Tensor"
@@ -59,9 +61,8 @@ class EpsilonNoise(Noise):
         assert isinstance(noise, Noise), "noise must be a Noise object"
         assert isinstance(epsilon, Number), "epsilon must be a Number"
         self.params["noise"] = noise
-        self.params["epsilon"] = nn.Parameter(
-            torch.tensor(epsilon, torch.float32), requires_grad=False
-        )
+        eps = torch.tensor(epsilon, dtype=torch.float32)
+        self.params["epsilon"] = nn.Parameter(eps, requires_grad=False)
 
     def __call__(self, x: Tensor):
         choice = torch.rand(x.shape[0], device=x.device) < self.params["epsilon"]

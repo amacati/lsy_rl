@@ -17,12 +17,14 @@ class TensorDictWrapper(Wrapper, ABC):
         super().__init__(env)
 
     @abstractmethod
-    def step(self, action: Tensor) -> TensorDict[str, Tensor]: ...
+    def step(self, action: Tensor) -> TensorDict[str, Tensor]:
+        ...
 
     @abstractmethod
     def reset(
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
-    ) -> TensorDict: ...
+    ) -> TensorDict:
+        ...
 
 
 class DefaultTensorDictWrapper(TensorDictWrapper):

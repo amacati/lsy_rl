@@ -16,21 +16,26 @@ class Logger(ABC):
         super().__init__()
 
     @abstractmethod
-    def log(self, data, step: int, flush: bool = False): ...
+    def log(self, data: dict, step: int, flush: bool = False):
+        ...
 
     @abstractmethod
-    def flush(self): ...
+    def flush(self):
+        ...
 
-    def stop(self): ...
+    def stop(self):
+        ...
 
 
 class EmptyLogger(Logger):
     def __init__(self):
         super().__init__()
 
-    def log(self, data, step: int, flush: bool = False): ...
+    def log(self, data: dict, step: int, flush: bool = False):
+        ...
 
-    def flush(self): ...
+    def flush(self):
+        ...
 
 
 class LoggerList(Logger):
@@ -81,6 +86,29 @@ class ConsoleLogger(Logger):
                         print(f"\t{key}: {value:.2f}")
                     case _:
                         print(f"\t{key}: {value}")
+
+
+class MemLogger(Logger):
+    def __init__(self, filter: str | None = None):
+        super().__init__()
+        self._log = dict()
+        self._filter = filter
+
+    @property
+    def data(self):
+        return self._log
+
+    def log(self, data: dict, step: int, flush: bool = False):
+        data = {k: v for k, v in data.items() if self._filter is None or self._filter in k}
+        if not data:
+            return
+        self._log[step] = self._log.get(step, dict()) | data
+
+    def flush(self):
+        pass
+
+    def stop(self):
+        pass
 
 
 class FileLogger(Logger):

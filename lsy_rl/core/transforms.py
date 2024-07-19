@@ -21,11 +21,14 @@ class Transform(nn.Module):
         super().__init__()
         self.params = nn.ParameterDict()
 
-    def reset(self): ...
+    def reset(self):
+        ...
 
-    def forward(self, x: Tensor, *args) -> tuple[Tensor, Any]: ...
+    def forward(self, x: Tensor, *args) -> tuple[Tensor, Any]:
+        ...
 
-    def update(self, x: Tensor): ...
+    def update(self, x: Tensor):
+        ...
 
 
 class ChainedTF(Transform):
@@ -53,15 +56,14 @@ class IdentityTF(Transform):
 
 
 class ClipTF(Transform):
-    def __init__(self, min: Number, max: Number):
+    def __init__(self, min: Number | list[Number], max: Number | list[Number]):
         super().__init__()
-        assert isinstance(min, Number) and isinstance(max, Number), "min and max must be Numbers"
-        self.params["min"] = nn.Parameter(
-            torch.tensor(min, dtype=torch.float32), requires_grad=False
-        )
-        self.params["max"] = nn.Parameter(
-            torch.tensor(max, dtype=torch.float32), requires_grad=False
-        )
+        assert isinstance(min, (Number, list)) and isinstance(
+            max, (Number, list)
+        ), "min and max must be floats or lists of floats"
+        min, max = torch.tensor(min, dtype=torch.float32), torch.tensor(max, dtype=torch.float32)
+        self.params["min"] = nn.Parameter(min, requires_grad=False)
+        self.params["max"] = nn.Parameter(max, requires_grad=False)
 
     def forward(self, x: Tensor, *args) -> tuple[Tensor, Any]:
         assert isinstance(x, Tensor), f"Input must be a Tensor, is {type(x)} {x}"

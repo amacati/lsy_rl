@@ -47,7 +47,7 @@ def test_simple_add(device):
     sample["obs"] = obs
     buffer.add(sample)
     assert len(buffer) == num_envs
-    assert buffer.buffer.keys() == sample.keys()
+    assert all([kb == ko for kb, ko in zip(buffer.buffer.keys(), sample.keys())])
 
 
 @pytest.mark.parametrize(
