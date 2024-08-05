@@ -19,7 +19,8 @@ replay_buffer_cls: Callable[[str], type[ReplayBuffer]] = module_type_from_string
 
 
 class ReplayBuffer(ABC):
-    def __init__(self): ...
+    def __init__(self):
+        pass
 
     @abstractmethod
     def add(self, obs, action, reward, next_obs, terminated, truncated):
@@ -274,7 +275,8 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
         for i in torch.nonzero(overwrite_len).flatten():
             ep_idx = (torch.arange(overwrite_len[i], device=self.device) + idx + 1) % self.bufflen
             self._remaining_steps[i, ep_idx] = -1
-            self._invalid_idx[i, 0] = (idx + 1) % self.bufflen
+            # Invalid indices at 0 point to the end of the last completed episode, so we don't need
+            # to update them
             self._invalid_idx[i, 1] = (ep_idx[-1] + 1) % self.bufflen
         self._running_steps += 1
         done = (sample["terminated"] | sample["truncated"]).squeeze()  # Remove batch dimension
@@ -285,6 +287,7 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
             ep_idx = (
                 torch.arange(-self._running_steps[i] + 1, 1, device=self.device) + idx
             ) % self.bufflen
+            assert len(ep_idx) <= self.bufflen, "Episode length exceeds buffer length"
             # Create a descending range of remaining steps to the end of the episode
             steps = torch.arange(self._running_steps[i] - 1, -1, -1, device=self.device)
             self._remaining_steps[i, ep_idx] = steps
@@ -301,7 +304,7 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
         Args:
             batch_size: The batch size.
         """
-        assert len(self) >= 0, "Not enough samples in the buffer"
+        assert len(self) >= batch_size, "Not enough samples in the buffer"
         # Hindsight sample selection:
         # We need to sample from the valid indices. We track the invalid indices in the buffer with
         # the _invalid_idx helper. To sample only valid indices, we take the following steps:
@@ -329,16 +332,14 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
         # 7.) Set the desired goal of the HER samples to the virtual goal and recalculate the reward
         v_idx = torch.randint(self.num_envs, size=(batch_size,), device=self.device)
         invalid_idx = self._invalid_idx[v_idx]
-        wrapped = invalid_idx[:, 0] > invalid_idx[:, 1]
         # Compute the number of invalid samples per vector entry
-        n_invalid_wrapped = self.bufflen - invalid_idx[:, 0] + invalid_idx[:, 1]
-        n_invalid_unwrapped = invalid_idx[:, 1] - invalid_idx[:, 0] + 1
-        n_invalid = torch.where(wrapped, n_invalid_wrapped, n_invalid_unwrapped)
+        n_invalid = (invalid_idx[:, 1] - invalid_idx[:, 0] + 1) % self.bufflen
         # Sample random indices within the valid range
-        idx_interval = self.bufflen - n_invalid
-        rand_idx = (torch.rand(batch_size, device=self.device) * (idx_interval)).long()
-        idx = (rand_idx + invalid_idx[:, 1] + 1) % self.bufflen
-        assert torch.all(self._remaining_steps[v_idx, idx] >= 0)  # Check if all samples are valid
+        offset_range = self.bufflen - n_invalid
+        offsets = (torch.rand(batch_size, device=self.device) * offset_range).long()
+        idx = (invalid_idx[:, 1] + 1 + offsets) % self.bufflen
+        # Check if all samples are valid
+        assert torch.all(self._remaining_steps[v_idx, idx] >= 0), "Invalid samples in the batch"
         # Clone the batch and sample HER indices
         batch = self.buffer[v_idx, idx].clone()
         her_idx = torch.randperm(batch_size, device=self.device)[: int(batch_size * self.p_her)]
@@ -360,4 +361,5 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
         return batch
 
     def __len__(self) -> int:
-        return (self._maxidx + 1) * self.num_envs
+        n_invalid = (self._invalid_idx[:, 1] - self._invalid_idx[:, 0] + 1) % self.bufflen
+        return (self.bufflen - n_invalid).sum().item()
