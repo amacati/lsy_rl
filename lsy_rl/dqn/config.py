@@ -35,7 +35,7 @@ class RolloutConfig:
 
 @dataclass
 class TrainConfig:
-    freq: int
+    period: int
     lr: float = 1e-4
     net_cls: type[DQNet] = DoubleDQNet
     net_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -50,11 +50,11 @@ class TrainConfig:
 
 @dataclass
 class EvalConfig:
-    freq: int
+    period: int
     steps: int
 
 
 @dataclass
 class CheckpointConfig:
-    freq: int | None = None
+    period: int | None = None
     path: str | None = None

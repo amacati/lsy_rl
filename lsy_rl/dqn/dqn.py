@@ -66,9 +66,9 @@ class DQN(Algorithm):
         }
         self.train_info = {"num_samples": 0, "num_gradient_steps": 0, "loss": 0}
         # Reduce the number of log entries during training for performance reasons
-        train_steps = self.config.rollout.max_samples // self.config.train.freq
+        train_steps = self.config.rollout.max_samples // self.config.train.period
         grad_steps = train_steps * self.config.train.gradient_steps
-        self.train_info["log_freq"] = max(1, grad_steps // 1000)  # Log 1000 times during training
+        self.train_info["log_period"] = max(1, grad_steps // 1000)  # Log 1000 times during training
         self.eval_info = {
             "num_samples": 0,
             "rewards": torch.zeros(self.env.num_envs, device=self.config.train.device),
@@ -86,21 +86,21 @@ class DQN(Algorithm):
         if self.rollout_info["num_samples"] < self.config.train.batch_size:
             return False
         num_samples = self.rollout_info["num_samples"] - self.train_info["num_samples"]
-        if num_samples >= self.config.train.freq:
+        if num_samples >= self.config.train.period:
             return True
         return False
 
     @property
     def eval_condition(self):
         num_samples = self.rollout_info["num_samples"] - self.eval_info["num_samples"]
-        return num_samples >= self.config.eval.freq
+        return num_samples >= self.config.eval.period
 
     @property
     def checkpoint_condition(self):
-        if self.config.checkpoint.freq is None:
+        if self.config.checkpoint.period is None:
             return False
         num_samples = self.rollout_info["num_samples"] - self.checkpoint_info["num_samples"]
-        return num_samples >= self.config.checkpoint.freq
+        return num_samples >= self.config.checkpoint.period
 
     def train(self):
         while not self.stop_condition:
@@ -169,8 +169,8 @@ class DQN(Algorithm):
             self.optimizer.step()
             self.train_info["num_gradient_steps"] += 1
             self.train_info["loss"] += loss.detach()  # Accumulate loss for logging
-            if self.train_info["num_gradient_steps"] % self.train_info["log_freq"] == 0:
-                data = {"train/loss": self.train_info["loss"] / self.train_info["log_freq"]}
+            if self.train_info["num_gradient_steps"] % self.train_info["log_period"] == 0:
+                data = {"train/loss": self.train_info["loss"] / self.train_info["log_period"]}
                 self.logger.log(data, step=self.rollout_info["num_samples"])
                 self.train_info["loss"] = 0
         self._update_train_info()
@@ -214,24 +214,24 @@ class DQN(Algorithm):
     def _next_required_samples(self):
         # Calculate required samples for next training step
         current_samples = self.rollout_info["num_samples"] - self.train_info["num_samples"]
-        train_samples = self.config.train.freq - current_samples
+        train_samples = self.config.train.period - current_samples
         # Check if we have enough samples for a batch. If not, collect as many samples as required
         # to fill a batch
         if self.rollout_info["num_samples"] - self.config.train.batch_size < 0:
             if train_samples < self.config.train.batch_size - self.rollout_info["num_samples"]:
                 train_samples = self.config.train.batch_size - self.rollout_info["num_samples"]
         if train_samples == 0:
-            train_samples = self.config.train.freq
+            train_samples = self.config.train.period
         # Calculate required samples for next eval step
         current_samples = self.rollout_info["num_samples"] - self.eval_info["num_samples"]
-        eval_samples = self.config.eval.freq - current_samples
-        eval_samples = eval_samples if eval_samples > 0 else self.config.eval.freq
+        eval_samples = self.config.eval.period - current_samples
+        eval_samples = eval_samples if eval_samples > 0 else self.config.eval.period
         # Calculate required samples for next checkpoint
-        if self.config.checkpoint.freq is None:
+        if self.config.checkpoint.period is None:
             checkpoint_samples = np.inf
         else:
             current_samples = self.rollout_info["num_samples"] - self.checkpoint_info["num_samples"]
-            checkpoint_samples = self.config.checkpoint.freq - current_samples
+            checkpoint_samples = self.config.checkpoint.period - current_samples
         return min([train_samples, eval_samples, checkpoint_samples])
 
     def _update_train_info(self):
@@ -250,33 +250,33 @@ class DQN(Algorithm):
         rollout_config = RolloutConfig(**vars(config.rollout))
         train_config = TrainConfig(**vars(config.train))
         eval_config = EvalConfig(**vars(config.eval))
-        checkpoint_config = CheckpointConfig(config.checkpoint.freq, Path(config.checkpoint.path))
+        checkpoint_config = CheckpointConfig(config.checkpoint.period, Path(config.checkpoint.path))
 
         # Check if the config is valid
-        assert train_config.freq > 0, "The training frequency must be greater than 0."
-        if not train_config.freq % env_config.kwargs["num_envs"] == 0:
+        assert train_config.period > 0, "The training period must be greater than 0."
+        if not train_config.period % env_config.kwargs["num_envs"] == 0:
             raise ValueError(
                 (
-                    f"The train frequency ({train_config.freq}) must be divisible by "
+                    f"The train period ({train_config.period}) must be divisible by "
                     f" 'num_envs' ({env_config.num_envs})."
                 )
             )
-        if not eval_config.freq % env_config.kwargs["num_envs"] == 0:
+        if not eval_config.period % env_config.kwargs["num_envs"] == 0:
             raise ValueError(
                 (
-                    f"The 'eval_freq' ({eval_config.freq}) must be divisible by "
+                    f"The eval period ({eval_config.period}) must be divisible by "
                     f"'num_envs' ({env_config.num_envs})."
                 )
             )
-        if checkpoint_config.freq is not None:
-            if checkpoint_config.freq is None:
+        if checkpoint_config.period is not None:
+            if checkpoint_config.period is None:
                 raise ValueError(
-                    "If 'checkpoint_freq' is not None, 'checkpoint_path' must be " "specified."
+                    "If 'checkpoint_period' is not None, 'checkpoint_path' must be " "specified."
                 )
-            if not checkpoint_config.freq % env_config.kwargs["num_envs"] == 0:
+            if not checkpoint_config.period % env_config.kwargs["num_envs"] == 0:
                 raise ValueError(
                     (
-                        f"The 'checkpoint_freq' ({checkpoint_config.freq}) must be "
+                        f"The 'checkpoint_period' ({checkpoint_config.period}) must be "
                         f"divisible by 'num_envs' ({env_config.num_envs})."
                     )
                 )

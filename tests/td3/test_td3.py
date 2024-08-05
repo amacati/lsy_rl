@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from lsy_rl.core import Algorithm
-from lsy_rl.ddpg import DDPG
+from lsy_rl.td3 import TD3
 from lsy_rl.utils import load_config
 
 
@@ -27,10 +27,10 @@ def cuda_not_available() -> bool:
 @pytest.mark.integration
 def test_init(device: torch.device, vectorization_mode: str):
     env = gymnasium.make_vec("Pendulum-v1", num_envs=10, vectorization_mode=vectorization_mode)
-    config = load_config(Path(__file__).parent / "data/ddpg_config.toml")
+    config = load_config(Path(__file__).parent / "data/td3_config.toml")
     config.train.device = device
-    ddpg = DDPG(env, env, config)
-    assert isinstance(ddpg, Algorithm)
+    td3 = TD3(env, env, config)
+    assert isinstance(td3, Algorithm)
 
 
 @pytest.mark.parametrize(
@@ -44,12 +44,14 @@ def test_init(device: torch.device, vectorization_mode: str):
     ),
 )
 @pytest.mark.parametrize("vectorization_mode", ("sync", "async"))
+@pytest.mark.parametrize("batch_size", (1, 3))
 @pytest.mark.integration
-def test_training(device: torch.device, vectorization_mode: str):
+def test_training(device: torch.device, vectorization_mode: str, batch_size: int):
     env = gymnasium.make_vec("Pendulum-v1", num_envs=10, vectorization_mode=vectorization_mode)
     eval_env = gymnasium.make_vec("Pendulum-v1", num_envs=10, vectorization_mode=vectorization_mode)
-    config = load_config(Path(__file__).parent / "data/ddpg_config.toml")
+    config = load_config(Path(__file__).parent / "data/td3_config.toml")
+    config.train.batch_size = batch_size
     config.train.device = device
-    ddpg = DDPG(env, eval_env, config)
-    ddpg.train()
-    assert isinstance(ddpg, Algorithm)
+    td3 = TD3(env, eval_env, config)
+    td3.train()
+    assert isinstance(td3, Algorithm)

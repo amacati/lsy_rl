@@ -55,6 +55,35 @@ class NormalNoise(Noise):
         return x
 
 
+class ClippedNormalNoise(Noise):
+    def __init__(
+        self,
+        mean: Number | list[Number],
+        std: Number | list[Number],
+        c_low: Number | list[Number],
+        c_high: Number | list[Number],
+    ):
+        super().__init__()
+        T = (Number, list)
+        assert isinstance(mean, T), f"mean must be {T}, got {mean}"
+        assert isinstance(std, T), f"std must be {T}, got {std}"
+        assert isinstance(c_low, T), f"c_low must be {T}, got {c_low}"
+        assert isinstance(c_high, T), f"c_high must be {T}, got {c_high}"
+        mean, std = torch.tensor(mean, dtype=torch.float32), torch.tensor(std, dtype=torch.float32)
+        c_low = torch.tensor(c_low, dtype=torch.float32)
+        c_high = torch.tensor(c_high, dtype=torch.float32)
+        self.params["mean"] = nn.Parameter(mean, requires_grad=False)
+        self.params["std"] = nn.Parameter(std, requires_grad=False)
+        self.params["c_low"] = nn.Parameter(c_low, requires_grad=False)
+        self.params["c_high"] = nn.Parameter(c_high, requires_grad=False)
+
+    def __call__(self, x: Tensor):
+        assert isinstance(x, Tensor), "Input must be a Tensor"
+        x = torch.randn(x.shape, device=x.device) * self.params["std"] + self.params["mean"]
+        x = torch.clamp(x, self.params["c_low"], self.params["c_high"])
+        return x
+
+
 class EpsilonNoise(Noise):
     def __init__(self, noise: Noise, epsilon: Number):
         super().__init__()

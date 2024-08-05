@@ -1,9 +1,10 @@
 import datetime
+import inspect
 import logging
 import sys
 import tomllib
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, TypeVar
 
 import numpy as np
 import torch
@@ -31,6 +32,19 @@ def polyak_update_(target_net: nn.Module, net: nn.Module, tau: float):
 
 
 def module_type_from_string(module_name: str) -> Callable[[str], type]:
+    """Get a module type factory converting strings to types within the module.
+
+    Args:
+        module_name: The name of the module to get the types from.
+
+    Example:
+        >>> np_type = module_type_from_string("numpy")
+        >>> x = np_type("array")([1, 2, 3])
+
+    Returns:
+        A factory function that converts a string to a type within the module.
+    """
+
     def _module_type_from_string(name: str) -> type:
         return getattr(sys.modules[module_name], name)
 
@@ -77,6 +91,14 @@ def torchify_dtype(dtype: np.dtype) -> torch.dtype:
 
 
 def load_config(path: Path) -> Munch:
+    """Load a toml configuration file and convert it to a Munch object.
+
+    Args:
+        path: The path to the configuration file.
+
+    Returns:
+        The configuration as a Munch object providing key access via dot/member syntax.
+    """
     with open(path, "rb") as f:
         config = tomllib.load(f)
     return munchify(config)
@@ -104,3 +126,55 @@ def unique_folder(dir: Path | None) -> Path | None:
         uid = f"{uid}_({t})"
     (dir / uid).mkdir(parents=True, exist_ok=False)
     return dir / uid
+
+
+T = TypeVar("T")
+
+
+def to_cls(
+    cls: T | str, factory: Callable[[str], T] | None = None, expected_type: T | None = None
+) -> T:
+    """Convert the input that might be a class or a string of the class name to a class.
+
+    Args:
+        cls: The class type or name to convert.
+        factory: A factory function to convert a string to a class.
+        expected_type: The expected type of the value.
+
+    Returns:
+        The class type.
+    """
+    if not isinstance(cls, type):
+        if isinstance(cls, str) and factory is not None:
+            return factory(cls)
+    elif issubclass(cls, expected_type):
+        return cls
+    raise TypeError(f"Invalid type {cls} (expected type {expected_type} or string)")
+
+
+def check_kwargs(kwargs: dict[str, Any], cls: type, ignore: list[str] = []):
+    """Check if all required arguments are present in the kwargs.
+
+    Args:
+        kwargs: The keyword arguments to check.
+        cls: The class to check the arguments against.
+        ignore: Any arguments to ignore.
+    """
+    assert isinstance(kwargs, dict), "Kwargs must be a dict"
+    for x in required_args(cls):
+        if x in ignore or x in ("args", "kwargs"):
+            continue
+        if x not in kwargs:
+            raise ValueError(f"Missing required argument '{x}' for {cls}")
+
+
+def required_args(cls: type) -> list[str]:
+    """Get the required arguments for a class.
+
+    Args:
+        cls: The class to get the arguments for.
+
+    Returns:
+        The required arguments for the class.
+    """
+    return [p.name for p in inspect.signature(cls).parameters.values() if p.default == p.empty]
