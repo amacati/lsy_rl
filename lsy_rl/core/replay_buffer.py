@@ -272,6 +272,7 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
         assert sample.batch_size[0] == v_idx.shape[0], "Sample size must match the env index"
         # +1 because we overwrite to 0 inclusive
         overwrite_len = self._remaining_steps[v_idx, (idx + 1) % self.bufflen] + 1
+        # TODO: Avoid overwriting the whole episode, overwrite one sample at a time instead
         for i in torch.nonzero(overwrite_len).flatten():
             ep_idx = (torch.arange(overwrite_len[i], device=self.device) + idx + 1) % self.bufflen
             self._remaining_steps[i, ep_idx] = -1
@@ -304,7 +305,6 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
         Args:
             batch_size: The batch size.
         """
-        assert len(self) >= batch_size, "Not enough samples in the buffer"
         # Hindsight sample selection:
         # We need to sample from the valid indices. We track the invalid indices in the buffer with
         # the _invalid_idx helper. To sample only valid indices, we take the following steps:

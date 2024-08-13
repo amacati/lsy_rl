@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from numbers import Number
-from typing import Any, Callable, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 import torch
 import torch.nn as nn
@@ -11,8 +11,11 @@ from torch import Tensor
 from lsy_rl.core.noise import Noise, noise_cls
 from lsy_rl.utils.utils import module_type_from_string, to_cls
 
-# TODO: Replace with plain transform
+if TYPE_CHECKING:
+    from torch.nn.modules.module import _IncompatibleKeys
+
 transform: Callable[[str], type[Transform]] = module_type_from_string(__name__)
+transform_cls = transform  # Alias for modules that use transform as a variable name
 
 
 def to_transforms(transforms: list[Transform | dict] | Transform) -> Transform:
@@ -40,52 +43,84 @@ def to_transforms(transforms: list[Transform | dict] | Transform) -> Transform:
 
 
 class Transform(nn.Module):
+    """Base class for all transforms."""
+
     def __init__(self):
+        """Initialize a parameter dictionary which stores all parameters."""
         super().__init__()
         self.params = nn.ParameterDict()
 
     def reset(self):
+        """Reset the state of the transform."""
         ...
 
     def forward(self, x: Tensor) -> Tensor:
+        """Apply the transform to the input Tensor."""
         ...
 
     def update(self, x: Tensor):
+        """Update the transform with a batch of data."""
         ...
 
 
 class ChainedTF(Transform):
+    """Chain multiple transforms together into a sequence."""
+
     def __init__(self, transforms: list[Transform]):
+        """Initialize the transforms.
+
+        Args:
+            transforms: The list of transforms to chain together.
+        """
         super().__init__()
         assert all(isinstance(x, Transform) for x in transforms), "All elements must be Transforms"
         self.params["transforms"] = nn.ModuleList(transforms)
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return the number of transforms in the chain."""
         return len(self.params["transforms"])
 
     def __getitem__(self, idx: int) -> Transform:
+        """Return the transform at the given index."""
         return self.params["transforms"][idx]
 
     def reset(self):
+        """Reset the state of all transforms in the chain."""
         for transform in self.params["transforms"]:
             transform.reset()
 
     def forward(self, x: Tensor) -> Tensor:
+        """Sequentially apply all transforms in the chain."""
         for transform in self.params["transforms"]:
             x = transform(x)
         return x
 
 
 class IdentityTF(Transform):
+    """Identity transform that does nothing.
+
+    Useful for, e.g., choice transforms where one option is to do nothing.
+    """
+
     def __init__(self):
+        """Initialize the identity transform."""
         super().__init__()
 
     def forward(self, x: Tensor) -> Tensor:
+        """Return the input Tensor unchanged."""
         return x
 
 
 class ClipTF(Transform):
+    """Clip the input Tensor to a given range."""
+
     def __init__(self, min: Number | list[Number], max: Number | list[Number]):
+        """Initialize the clipping parameters.
+
+        Args:
+            min: The minimum value or list of minimum values for each dimension.
+            max: The maximum value or list of maximum values for each dimension.
+        """
         super().__init__()
         assert isinstance(min, (Number, list)) and isinstance(
             max, (Number, list)
@@ -95,12 +130,21 @@ class ClipTF(Transform):
         self.params["max"] = nn.Parameter(max, requires_grad=False)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Clip the input Tensor to the given range."""
         assert isinstance(x, Tensor), f"Input must be a Tensor, is {type(x)} {x}"
         return torch.clamp(x, self.params["min"], self.params["max"])
 
 
 class AdditiveNoiseTF(Transform):
+    """Add noise to the input Tensor."""
+
     def __init__(self, noise: Noise | dict):
+        """Initialize the noise.
+
+        Args:
+            noise: The noise object or dict with the keys "type" and "kwargs". If a dict, the noise
+                is created with noise_cls(noise["type"])(**noise["kwargs"]).
+        """
         super().__init__()
         if isinstance(noise, dict):
             noise = noise_cls(noise["type"])(**(noise.get("kwargs") or {}))
@@ -108,12 +152,22 @@ class AdditiveNoiseTF(Transform):
         self.params["noise"] = noise
 
     def forward(self, x: Tensor) -> Tensor:
+        """Add noise to the input Tensor."""
         assert isinstance(x, Tensor), "Input must be a Tensor"
         return x + self.params["noise"](x)
 
 
 class ChoiceTF(Transform):
+    """Apply one transform from a list of transforms with a given probability."""
+
     def __init__(self, transforms: list[Transform | dict], prob: list[float]):
+        """Initialize the transforms and probabilities.
+
+        Args:
+            transforms: The list of transforms or dicts with the keys "type" and "kwargs". If dicts,
+                transforms are created with transform_cls(transform["type"])(**transform["kwargs"]).
+            prob: The probabilities for each transform. Must sum to 1.
+        """
         super().__init__()
         # Convert potential dicts to Transform objects
         for i, tf in enumerate(transforms):
@@ -130,13 +184,22 @@ class ChoiceTF(Transform):
         self.params["prob"] = nn.Parameter(prob, requires_grad=False)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Apply one of the transforms with the given probability."""
         tf_idx = torch.multinomial(self.params["prob"], x.shape[0], replacement=True)
         x = torch.stack([self.params["transforms"][j](x[i]) for i, j in enumerate(tf_idx)])
         return x
 
 
 class ReplaceWithNoiseTF(Transform):
+    """Replace the input Tensor with noise of the same."""
+
     def __init__(self, noise: Noise | dict):
+        """Initialize the noise.
+
+        Args:
+            noise: The noise object or dict with the keys "type" and "kwargs". If a dict, the noise
+                is created with noise_cls(noise["type"])(**noise["kwargs"]).
+        """
         super().__init__()
         if isinstance(noise, dict):
             noise = noise_cls(noise["type"])(**(noise.get("kwargs") or {}))
@@ -144,32 +207,47 @@ class ReplaceWithNoiseTF(Transform):
         self.params["noise"] = noise
 
     def forward(self, x: Tensor) -> Tensor:
+        """Replace the input Tensor with noise sampled from the noise module."""
         return self.params["noise"](x)
 
 
 class ScaleTF(Transform):
+    """Scale the input Tensor by a constant factor."""
+
     def __init__(self, scale: Number | Iterable[Number]):
+        """Initialize the scaling parameters.
+
+        Args:
+            scale: The scaling factor. If a single number, all dimensions are scaled by the same
+                factor. If an Iterable, the dimensions are scaled element-wise.
+        """
         super().__init__()
         assert isinstance(scale, (Number, Iterable)), "scale must be a Number or Iterable"
         self.params["scale"] = nn.Parameter(torch.tensor(scale), requires_grad=False)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Scale the input Tensor."""
         assert isinstance(x, Tensor), "Input must be a Tensor"
         return x * self.params["scale"]
 
 
 class TensorNormTF(Transform):
+    """Normalize Tensors with running statistics of the mean and standard deviation."""
+
     def __init__(self):
+        """Parameters are created lazily during the first forward pass or update."""
         super().__init__()
         self.eps2 = 1e-4
         self._is_init = False
 
     def forward(self, x: Tensor) -> Tensor:
+        """Normalize the input Tensor with the computed statistics."""
         assert isinstance(x, Tensor), f"Expected input to be a Tensor, is {type(x)}"
         self._lazy_init(x)
         return (x - self.params["mean"]) / self.params["std"]
 
     def update(self, x: Tensor):
+        """Update the normalization statistics with a batch of data."""
         assert isinstance(x, Tensor), f"Expected input to be a Tensor, is {type(x)}"
         self._lazy_init(x)
         # A batched variant of Welford's algorithm
@@ -201,12 +279,16 @@ class TensorNormTF(Transform):
 
 
 class TensorDictNormTF(Transform):
+    """Normalize TensorDicts with running statistics of the mean and standard deviation."""
+
     def __init__(self):
+        """The parameters are created lazily during the first forward pass or update."""
         super().__init__()
         self._is_init = False
 
     @torch.no_grad()
     def forward(self, x: TensorDict) -> Tensor:
+        """Normalize the input TensorDict with the computed statistics."""
         assert isinstance(x, TensorDict), "Input must be a Tensor"
         self._lazy_init(x)
         norm_td = TensorDict(
@@ -221,6 +303,7 @@ class TensorDictNormTF(Transform):
 
     @torch.no_grad()
     def update(self, x: TensorDict):
+        """Update the normalization statistics with a batch of data."""
         assert isinstance(x, TensorDict), f"Expected input to be a TensorDict, is {type(x)}"
         assert len(x.batch_size) == 1, f"Batch size must be a scalar, is {x.batch_size}"
         self._lazy_init(x)
@@ -263,7 +346,19 @@ class TensorDictNormTF(Transform):
 
     def load_state_dict(
         self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
-    ):
+    ) -> _IncompatibleKeys:
+        """Copy parameters and buffers from state_dict into this module and its descendants.
+
+        The parameters might not be initialized yet since they are created lazily. Therefore, we
+        infer the shapes from the state dict and initialize the parameters if necessary before
+        loading the state dict.
+
+        Args:
+            state_dict: A dict containing parameters and persistent buffers.
+            strict: Whether to strictly enforce that the keys in state_dict match the keys returned
+                by this module's state_dict() function.
+            assign: Whether to assign the parameters directly or to copy them.
+        """
         if not self._is_init:  # Parameters have to be created before loading the state_dict
             param_dict = {}
             for key, value in state_dict.items():
