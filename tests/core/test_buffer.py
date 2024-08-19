@@ -222,5 +222,5 @@ def test_her_vector_replay_buffer_sample(device):
             buffer.add(sample)
         sample["truncated"][...] = True
         buffer.add(sample)
-    # Buffer size is smaller than max_size since HER invalidates saved episodes on wrapping around
+    assert len(buffer) == max_size
     sample = buffer.sample(batch_size)
