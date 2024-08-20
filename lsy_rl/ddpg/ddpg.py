@@ -84,6 +84,7 @@ class DDPG(Algorithm):
         self.train_info = self._init_train_info()
         self.eval_info = self._init_eval_info()
         self.checkpoint_info = self._init_checkpoint_info()
+        self.time_info = self._init_time_info()
 
         # Don't overwrite the checkpoint path in the config in case it gets reused for multiple runs
         self.checkpoint_path = unique_folder(self.cfg.checkpoint.path)
@@ -118,13 +119,23 @@ class DDPG(Algorithm):
         """Train the policy using the DDPG algorithm."""
         self.evaluate_policy()  # Establish an initial baseline
         while not self.stop_condition:
+            t = time.perf_counter()
             self.collect_samples()
+            self.time_info.log["time/rollout"] += time.perf_counter() - t
             if self.train_condition:
+                t = time.perf_counter()
                 self.train_policy()
+                self.time_info.log["time/train"] += time.perf_counter() - t
             if self.eval_condition:
+                t = time.perf_counter()
                 self.evaluate_policy()
+                self.time_info.log["time/eval"] += time.perf_counter() - t
             if self.checkpoint_condition:
+                t = time.perf_counter()
                 self.save_checkpoint()
+                self.time_info.log["time/checkpoint"] += time.perf_counter() - t
+            self.time_info.n_samples = self.rollout_info.n_samples
+            self._log_time()
         if self.checkpoint_path is not None:
             self.save_checkpoint()  # Save the final checkpoint even if we don't reach the period
         self.logger.stop()
@@ -247,7 +258,7 @@ class DDPG(Algorithm):
         self.train_info.n_samples = self.rollout_info.n_samples
 
     @torch.no_grad()
-    def evaluate_policy(self):
+    def evaluate_policy(self) -> dict[str, float]:
         """Evaluate the policy on the evaluation environment and log the results."""
         self.policy.actor.eval()
         obs = self.eval_env.reset()
@@ -291,6 +302,7 @@ class DDPG(Algorithm):
         if not self.separate_eval_env:
             self.rollout_info.obs = self.env.reset()
         self.policy.actor.train()
+        return data
 
     def save_checkpoint(self):
         """Save a checkpoint of the policy, replay buffer and optimizers."""
@@ -369,6 +381,13 @@ class DDPG(Algorithm):
             self.logger.log(data, step=self.rollout_info.n_samples)
         info.last_log = info.n_train_steps
 
+    def _log_time(self):
+        """Log the time spent in each part of the algorithm."""
+        if self.time_info.n_samples - self.time_info.last_log < self.time_info.log_period:
+            return
+        self.logger.log(self.time_info.log.toDict(), step=self.time_info.n_samples)
+        self.time_info.last_log = self.time_info.n_samples
+
     def _set_seed(self, seed: int | None):
         if seed is not None:
             assert isinstance(seed, int), "The seed must be an integer."
@@ -439,8 +458,17 @@ class DDPG(Algorithm):
         """Initialize a container to store evaluation information for flow control and logging."""
         info = Munch()
         info.n_samples = 0
+        info.last_log = 0
         info.steps = torch.zeros(self.eval_env.num_envs, device=self.cfg.train.device)
         info.rewards = torch.zeros(self.eval_env.num_envs, device=self.cfg.train.device)
+        return info
+
+    def _init_time_info(self) -> Munch:
+        info = Munch()
+        info.n_samples = 0
+        info.last_log = 0
+        info.log_period = max(1, self.cfg.rollout.max_samples // self.num_logs)
+        info.log = Munch({"time/rollout": 0, "time/train": 0, "time/eval": 0, "time/checkpoint": 0})
         return info
 
     def _init_checkpoint_info(self) -> Munch:
