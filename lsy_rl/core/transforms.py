@@ -231,6 +231,20 @@ class ScaleTF(Transform):
         return x * self.params["scale"]
 
 
+class UnitNormTF(Transform):
+    """Scale the input Tensor to unit norm."""
+
+    def __init__(self):
+        """Initialize the scaling parameters."""
+        super().__init__()
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Scale the input Tensor."""
+        assert isinstance(x, Tensor), "Input must be a Tensor"
+        x = x / torch.norm(x, dim=-1, keepdim=True)
+        return x
+
+
 class TensorNormTF(Transform):
     """Normalize Tensors with running statistics of the mean and standard deviation."""
 
