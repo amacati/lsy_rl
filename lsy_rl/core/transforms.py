@@ -123,6 +123,25 @@ class ChainedTF(Transform):
         assert isinstance(transform, Transform), "transform must be a Transform"
         self.params["transforms"].append(transform)
 
+    def load_state_dict(
+        self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
+    ):
+        """Copy parameters and buffers from state_dict into this module and its descendants.
+
+        Args:
+            state_dict: A dict containing parameters and persistent buffers.
+            strict: Whether to strictly enforce that the keys in state_dict match the keys returned
+                by this module's state_dict() function.
+            assign: Whether to assign the parameters directly or to copy them.
+        """
+        for i, transform in enumerate(self.params["transforms"]):
+            sd = {
+                k.removeprefix(f"params.transforms.{i}."): v
+                for k, v in state_dict.items()
+                if k.startswith(f"params.transforms.{i}.")
+            }
+            transform.load_state_dict(sd, strict, assign)
+
 
 class IdentityTF(Transform):
     """Identity transform that does nothing.
@@ -409,5 +428,6 @@ class TensorDictNormTF(Transform):
                 key = key.split(".")[1]  # Remove "params."
                 if key.endswith("_mean"):  # Infer the previous keys and shapes from the state_dict
                     param_dict |= {key.removesuffix("_mean"): value.unsqueeze(0)}
+            assert param_dict, "No parameters found in state_dict"
             self._lazy_init(TensorDict(param_dict, batch_size=1))  # Initialize all parameters
         return super().load_state_dict(state_dict, strict, assign)

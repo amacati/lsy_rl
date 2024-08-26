@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 import torch
@@ -117,6 +119,12 @@ class DDPGPolicy(Policy):
         torch.save(save_dict, path)
 
     def load(self, path: Path):
-        save_dict = torch.load(path)
+        save_dict = torch.load(path, weights_only=True)
         self.actor.load_state_dict(save_dict["actor"])
         self.critic.load_state_dict(save_dict["critic"])
+
+    def to(self, device: str) -> DDPGPolicy:
+        self.device = torch.device(device)
+        self.actor.to(self.device)
+        self.critic.to(self.device)
+        return self
