@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import torch
 
 from lsy_rl.core.replay_buffer import ReplayBuffer, SimpleReplayBuffer, replay_buffer_cls
-from lsy_rl.core.transforms import IdentityTF, Transform, to_transforms
+from lsy_rl.core.transforms import IdentityTF, Transform, share_transforms, to_transforms
 from lsy_rl.ddpg.policy import DDPGActor, DDPGCritic
 from lsy_rl.utils.utils import check_kwargs, to_cls
 
@@ -26,6 +26,17 @@ class DDPGConfig:
 
     def __post_init__(self):
         dev = self.train.device
+        share_transforms(
+            (self.rollout.obs_transform, self.eval.obs_transform, self.train.obs_transform)
+        )
+        share_transforms(
+            (
+                self.rollout.action_transform,
+                self.eval.action_transform,
+                self.train.action_transform,
+                self.train.target_action_transform,
+            )
+        )
         self.rollout.action_transform = self.rollout.action_transform.to(dev)
         self.rollout.obs_transform = self.rollout.obs_transform.to(dev)
         self.eval.action_transform = self.eval.action_transform.to(dev)

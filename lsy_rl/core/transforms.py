@@ -18,7 +18,7 @@ transform: Callable[[str], type[Transform]] = module_type_from_string(__name__)
 transform_cls = transform  # Alias for modules that use transform as a variable name
 
 
-def to_transforms(transforms: list[Transform | dict] | Transform) -> Transform:
+def to_transforms(transforms: list[Transform | dict] | Transform) -> ChainedTF:
     """Convert a transform or a list of transforms to a Transform object.
 
     Args:
@@ -28,27 +28,50 @@ def to_transforms(transforms: list[Transform | dict] | Transform) -> Transform:
     Returns:
         The fused Transform.
     """
-    if isinstance(transforms, Transform):
+    if isinstance(transforms, ChainedTF):
         return transforms
+    if isinstance(transforms, Transform):
+        return ChainedTF([transforms])
     assert isinstance(transforms, Iterable), "transforms must be an iterable if not a Transform"
-    tfs = []
+    transform = ChainedTF()
     for tf in transforms:
         if isinstance(tf, Transform):
-            tfs.append(tf)
+            transform.append(tf)
             continue
         assert isinstance(tf, dict)
-        tf_cls = to_cls(tf["type"], factory=transform, expected_type=Transform)
-        tfs.append(tf_cls(**(tf.get("kwargs") or {})))
-    return ChainedTF(tfs)
+        tf_cls = to_cls(tf["type"], factory=transform_cls, expected_type=Transform)
+        transform.append(tf_cls(**(tf.get("kwargs") or {})))
+    return transform
+
+
+def share_transforms(transforms: list[ChainedTF], exclude: list[Transform] = []):
+    """Share the parameters of a list of chained transforms.
+
+    Args:
+        transforms: The list of chained transforms to share parameters between.
+    """
+    assert all(isinstance(x, ChainedTF) for x in transforms), "All elements must be ChainedTFs"
+    for i, ctf in enumerate(transforms):
+        assert isinstance(ctf, ChainedTF), "All elements must be ChainedTFs"
+        for tf in ctf:
+            if not tf.shared:
+                continue
+            if tf in exclude:
+                continue
+            for j in range(len(transforms)):
+                if i != j:
+                    transforms[j].append(tf)
+            exclude.append(tf)
 
 
 class Transform(nn.Module):
     """Base class for all transforms."""
 
-    def __init__(self):
+    def __init__(self, shared: bool = False):
         """Initialize a parameter dictionary which stores all parameters."""
         super().__init__()
         self.params = nn.ParameterDict()
+        self.shared = shared
 
     def reset(self):
         """Reset the state of the transform."""
@@ -66,13 +89,13 @@ class Transform(nn.Module):
 class ChainedTF(Transform):
     """Chain multiple transforms together into a sequence."""
 
-    def __init__(self, transforms: list[Transform]):
+    def __init__(self, transforms: list[Transform] = [], shared: bool = False):
         """Initialize the transforms.
 
         Args:
             transforms: The list of transforms to chain together.
         """
-        super().__init__()
+        super().__init__(shared=shared)
         assert all(isinstance(x, Transform) for x in transforms), "All elements must be Transforms"
         self.params["transforms"] = nn.ModuleList(transforms)
 
@@ -95,6 +118,11 @@ class ChainedTF(Transform):
             x = transform(x)
         return x
 
+    def append(self, transform: Transform):
+        """Append a transform to the chain."""
+        assert isinstance(transform, Transform), "transform must be a Transform"
+        self.params["transforms"].append(transform)
+
 
 class IdentityTF(Transform):
     """Identity transform that does nothing.
@@ -102,9 +130,9 @@ class IdentityTF(Transform):
     Useful for, e.g., choice transforms where one option is to do nothing.
     """
 
-    def __init__(self):
+    def __init__(self, shared: bool = False):
         """Initialize the identity transform."""
-        super().__init__()
+        super().__init__(shared=shared)
 
     def forward(self, x: Tensor) -> Tensor:
         """Return the input Tensor unchanged."""
@@ -114,14 +142,16 @@ class IdentityTF(Transform):
 class ClipTF(Transform):
     """Clip the input Tensor to a given range."""
 
-    def __init__(self, min: Number | list[Number], max: Number | list[Number]):
+    def __init__(
+        self, min: Number | list[Number], max: Number | list[Number], shared: bool = False
+    ):
         """Initialize the clipping parameters.
 
         Args:
             min: The minimum value or list of minimum values for each dimension.
             max: The maximum value or list of maximum values for each dimension.
         """
-        super().__init__()
+        super().__init__(shared=shared)
         assert isinstance(min, (Number, list)) and isinstance(
             max, (Number, list)
         ), "min and max must be floats or lists of floats"
@@ -138,14 +168,14 @@ class ClipTF(Transform):
 class AdditiveNoiseTF(Transform):
     """Add noise to the input Tensor."""
 
-    def __init__(self, noise: Noise | dict):
+    def __init__(self, noise: Noise | dict, shared: bool = False):
         """Initialize the noise.
 
         Args:
             noise: The noise object or dict with the keys "type" and "kwargs". If a dict, the noise
                 is created with noise_cls(noise["type"])(**noise["kwargs"]).
         """
-        super().__init__()
+        super().__init__(shared=shared)
         if isinstance(noise, dict):
             noise = noise_cls(noise["type"])(**(noise.get("kwargs") or {}))
         assert isinstance(noise, Noise), "noise must be a Noise object"
@@ -160,7 +190,7 @@ class AdditiveNoiseTF(Transform):
 class ChoiceTF(Transform):
     """Apply one transform from a list of transforms with a given probability."""
 
-    def __init__(self, transforms: list[Transform | dict], prob: list[float]):
+    def __init__(self, transforms: list[Transform | dict], prob: list[float], shared: bool = False):
         """Initialize the transforms and probabilities.
 
         Args:
@@ -168,7 +198,7 @@ class ChoiceTF(Transform):
                 transforms are created with transform_cls(transform["type"])(**transform["kwargs"]).
             prob: The probabilities for each transform. Must sum to 1.
         """
-        super().__init__()
+        super().__init__(shared=shared)
         # Convert potential dicts to Transform objects
         for i, tf in enumerate(transforms):
             if isinstance(tf, dict):
@@ -193,14 +223,14 @@ class ChoiceTF(Transform):
 class ReplaceWithNoiseTF(Transform):
     """Replace the input Tensor with noise of the same."""
 
-    def __init__(self, noise: Noise | dict):
+    def __init__(self, noise: Noise | dict, shared: bool = False):
         """Initialize the noise.
 
         Args:
             noise: The noise object or dict with the keys "type" and "kwargs". If a dict, the noise
                 is created with noise_cls(noise["type"])(**noise["kwargs"]).
         """
-        super().__init__()
+        super().__init__(shared=shared)
         if isinstance(noise, dict):
             noise = noise_cls(noise["type"])(**(noise.get("kwargs") or {}))
         assert isinstance(noise, Noise), "noise must be a Noise object"
@@ -214,14 +244,14 @@ class ReplaceWithNoiseTF(Transform):
 class ScaleTF(Transform):
     """Scale the input Tensor by a constant factor."""
 
-    def __init__(self, scale: Number | Iterable[Number]):
+    def __init__(self, scale: Number | Iterable[Number], shared: bool = False):
         """Initialize the scaling parameters.
 
         Args:
             scale: The scaling factor. If a single number, all dimensions are scaled by the same
                 factor. If an Iterable, the dimensions are scaled element-wise.
         """
-        super().__init__()
+        super().__init__(shared=shared)
         assert isinstance(scale, (Number, Iterable)), "scale must be a Number or Iterable"
         self.params["scale"] = nn.Parameter(torch.tensor(scale), requires_grad=False)
 
@@ -234,9 +264,9 @@ class ScaleTF(Transform):
 class UnitNormTF(Transform):
     """Scale the input Tensor to unit norm."""
 
-    def __init__(self):
+    def __init__(self, shared: bool = False):
         """Initialize the scaling parameters."""
-        super().__init__()
+        super().__init__(shared=shared)
 
     def forward(self, x: Tensor) -> Tensor:
         """Scale the input Tensor."""
@@ -248,9 +278,9 @@ class UnitNormTF(Transform):
 class TensorNormTF(Transform):
     """Normalize Tensors with running statistics of the mean and standard deviation."""
 
-    def __init__(self):
+    def __init__(self, shared: bool = False):
         """Parameters are created lazily during the first forward pass or update."""
-        super().__init__()
+        super().__init__(shared=shared)
         self.eps2 = 1e-4
         self._is_init = False
 
@@ -295,9 +325,9 @@ class TensorNormTF(Transform):
 class TensorDictNormTF(Transform):
     """Normalize TensorDicts with running statistics of the mean and standard deviation."""
 
-    def __init__(self):
+    def __init__(self, shared: bool = False):
         """The parameters are created lazily during the first forward pass or update."""
-        super().__init__()
+        super().__init__(shared=shared)
         self._is_init = False
 
     @torch.no_grad()
