@@ -144,6 +144,7 @@ class DDPG(Algorithm):
     def collect_samples(self):
         """Collect samples from the environment and store them in the replay buffer."""
         self.policy.actor.eval()
+        self.policy.actor.mode = "rollout"
 
         if "obs" not in self.rollout_info:  # If first rollout, reset the environment
             self.rollout_info.obs = self.env.reset()
@@ -194,6 +195,7 @@ class DDPG(Algorithm):
     def train_policy(self):
         """Train the policy using the collected samples in the replay buffer."""
         self.policy.actor.train()  # Critic is always in train mode, not used for inference
+        self.policy.actor.mode = "train"
 
         for _ in range(self.cfg.train.steps):
             # Update 'num_train_steps' at the beginning of the loop so that lower frequency updates
@@ -261,6 +263,7 @@ class DDPG(Algorithm):
     def evaluate_policy(self) -> dict[str, float]:
         """Evaluate the policy on the evaluation environment and log the results."""
         self.policy.actor.eval()
+        self.policy.actor.mode = "eval"
         obs = self.eval_env.reset()
         n_samples = 0
         rewards, ep_rewards, ep_steps, ep_last_rewards = [], [], [], []
