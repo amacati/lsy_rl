@@ -294,6 +294,8 @@ class DDPG(Algorithm):
             if self.cfg.eval.success_criteria is not None:
                 success = self.cfg.eval.success_criteria(ep_last_rewards)
                 data["eval/success_rate"] = success.mean()
+            if self.cfg.eval.post_callback is not None:
+                self.cfg.eval.post_callback(ep_last_rewards)
         self.logger.log(data, step=self.rollout_info.n_samples)
         # Reset the steps and rewards for future eval runs. Otherwise, the next eval run adds to
         # the values from the previous run
@@ -406,7 +408,8 @@ class DDPG(Algorithm):
 
     def _parse_config(self, config: SimpleNamespace, env: gymnasium.vector.VectorEnv) -> DDPGConfig:
         env_config = EnvConfig(**config.env)
-        rollout_config = RolloutConfig(**config.rollout, env=env.env_fns[0]())
+        env_config.env = env
+        rollout_config = RolloutConfig(**config.rollout)
         train_config = TrainConfig(**config.train)
         eval_config = EvalConfig(**config.eval)
         checkpoint_config = CheckpointConfig(**config.checkpoint)

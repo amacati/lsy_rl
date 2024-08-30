@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+import gymnasium
+import gymnasium.vector.async_vector_env
 import torch
 
 from lsy_rl.core.replay_buffer import ReplayBuffer, SimpleReplayBuffer, replay_buffer_cls
@@ -12,7 +14,6 @@ from lsy_rl.ddpg.policy import DDPGActor, DDPGCritic
 from lsy_rl.utils.utils import check_kwargs, to_cls
 
 if TYPE_CHECKING:
-    import gymnasium
     import numpy as np
 
 
@@ -41,6 +42,7 @@ class DDPGConfig:
         self.rollout.obs_transform = self.rollout.obs_transform.to(dev)
         self.eval.action_transform = self.eval.action_transform.to(dev)
         self.eval.obs_transform = self.eval.obs_transform.to(dev)
+        self.rollout.finalize(self.env.env)
 
 
 @dataclass
@@ -49,6 +51,7 @@ class EnvConfig:
     seed: int | None = None
     n_envs: int = 1
     kwargs: dict[str, Any] = field(default_factory=dict)
+    env: gymnasium.Env | None = None
 
 
 @dataclass
@@ -60,18 +63,27 @@ class RolloutConfig:
     replay_buffer_kwargs: dict[str, Any] = field(
         default_factory=lambda: {"max_size": 1_000_000, "num_envs": 1}
     )
-    env: gymnasium.Env | None = None
     success_criteria: Callable[[list[float]], np.ndarray] | None = None
 
     def __post_init__(self):
         self.replay_buffer_cls = to_cls(self.replay_buffer_cls, replay_buffer_cls, ReplayBuffer)
-        if "reward_fn" in self.replay_buffer_kwargs:
-            self.replay_buffer_kwargs["reward_fn"] = self.env.unwrapped.compute_reward
-        check_kwargs(
-            self.replay_buffer_kwargs, self.replay_buffer_cls, ignore=["num_envs", "device"]
-        )
         self.obs_transform = to_transforms(self.obs_transform)
         self.action_transform = to_transforms(self.action_transform)
+        check_kwargs(
+            self.replay_buffer_kwargs,
+            self.replay_buffer_cls,
+            ignore=["num_envs", "device", "reward_fn"],
+        )
+
+    def finalize(self, env: gymnasium.Env):
+        if "reward_fn" in self.replay_buffer_kwargs:
+            if isinstance(env, gymnasium.vector.VectorEnv) or isinstance(
+                env, gymnasium.experimental.vector.VectorEnv
+            ):
+                env = env.env_fns[0]()
+            else:
+                raise ValueError("Replay buffer reward_fn only works with vectorized environments")
+            self.replay_buffer_kwargs["reward_fn"] = env.unwrapped.compute_reward
 
 
 @dataclass
@@ -117,6 +129,7 @@ class EvalConfig:
     obs_transform: Transform = field(default_factory=IdentityTF)
     action_transform: Transform = field(default_factory=IdentityTF)
     success_criteria: Callable[[list[float]], np.ndarray] | None = None
+    post_callback: Callable[[list[float]], None] | None = None
 
     def __post_init__(self):
         self.obs_transform = to_transforms(self.obs_transform)
