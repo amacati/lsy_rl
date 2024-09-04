@@ -131,7 +131,7 @@ class EvalConfig:
     obs_transform: Transform = field(default_factory=IdentityTF)
     action_transform: Transform = field(default_factory=IdentityTF)
     success_criteria: Callable[[list[float]], np.ndarray] | None = None
-    post_callback: Callable[[list[float]], None] | None = None
+    post_callback: Callable[[list[float], int], None] | None = None
 
     def __post_init__(self):
         self.obs_transform = to_transforms(self.obs_transform)

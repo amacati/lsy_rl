@@ -295,7 +295,7 @@ class DDPG(Algorithm):
                 success = self.cfg.eval.success_criteria(ep_last_rewards)
                 data["eval/success_rate"] = success.mean()
             if self.cfg.eval.post_callback is not None:
-                self.cfg.eval.post_callback(ep_last_rewards)
+                self.cfg.eval.post_callback(ep_last_rewards, self.rollout_info.n_samples)
         self.logger.log(data, step=self.rollout_info.n_samples)
         # Reset the steps and rewards for future eval runs. Otherwise, the next eval run adds to
         # the values from the previous run
