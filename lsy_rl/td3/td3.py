@@ -74,6 +74,7 @@ class TD3(DDPG):
         self.train_info = self._init_train_info()
         self.eval_info = self._init_eval_info()
         self.checkpoint_info = self._init_checkpoint_info()
+        self.time_info = self._init_time_info()
 
         # Don't overwrite the checkpoint path in the config in case it gets reused for multiple runs
         self.checkpoint_path = unique_folder(self.cfg.checkpoint.path)
@@ -149,7 +150,7 @@ class TD3(DDPG):
 
     def _parse_config(self, config: SimpleNamespace, env: gymnasium.vector.VectorEnv) -> TD3Config:
         env_config = EnvConfig(**config.env)
-        rollout_config = RolloutConfig(**config.rollout, env=env.env_fns[0]())
+        rollout_config = RolloutConfig(**config.rollout)
         train_config = TrainConfig(**config.train)
         eval_config = EvalConfig(**config.eval)
         checkpoint_config = CheckpointConfig(**config.checkpoint)

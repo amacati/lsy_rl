@@ -6,7 +6,13 @@ from typing import Any
 import torch
 
 from lsy_rl.core.noise import ClippedNormalNoise
-from lsy_rl.core.transforms import AdditiveNoiseTF, IdentityTF, Transform, to_transforms
+from lsy_rl.core.transforms import (
+    AdditiveNoiseTF,
+    IdentityTF,
+    Transform,
+    share_transforms,
+    to_transforms,
+)
 from lsy_rl.ddpg.config import CheckpointConfig as DDPGCheckpointConfig
 from lsy_rl.ddpg.config import EnvConfig as DDPGEnvConfig
 from lsy_rl.ddpg.config import EvalConfig as DDPGEvalConfig
@@ -25,20 +31,30 @@ class TD3Config:
 
     def __post_init__(self):
         dev = self.train.device
+        share_transforms(
+            (self.rollout.obs_transform, self.eval.obs_transform, self.train.obs_transform)
+        )
+        share_transforms(
+            (
+                self.rollout.action_transform,
+                self.eval.action_transform,
+                self.train.action_transform,
+                self.train.target_action_transform,
+            )
+        )
         self.rollout.action_transform = self.rollout.action_transform.to(dev)
         self.rollout.obs_transform = self.rollout.obs_transform.to(dev)
         self.eval.action_transform = self.eval.action_transform.to(dev)
         self.eval.obs_transform = self.eval.obs_transform.to(dev)
+        self.rollout.finalize(self.env.env)
 
 
 @dataclass
-class EnvConfig(DDPGEnvConfig):
-    ...
+class EnvConfig(DDPGEnvConfig): ...
 
 
 @dataclass
-class RolloutConfig(DDPGRolloutConfig):
-    ...
+class RolloutConfig(DDPGRolloutConfig): ...
 
 
 @dataclass
@@ -81,10 +97,8 @@ class TrainConfig:
 
 
 @dataclass
-class EvalConfig(DDPGEvalConfig):
-    ...
+class EvalConfig(DDPGEvalConfig): ...
 
 
 @dataclass
-class CheckpointConfig(DDPGCheckpointConfig):
-    ...
+class CheckpointConfig(DDPGCheckpointConfig): ...
