@@ -313,7 +313,8 @@ class DDPG(Algorithm):
         """Save a checkpoint of the policy, replay buffer and optimizers."""
         assert self.checkpoint_path.is_dir(), "The checkpoint path must be a directory."
         self.policy.save(self.checkpoint_path / "policy.pt")
-        self.buffer.save(self.checkpoint_path / "buffer.pt")
+        if self.cfg.checkpoint.save_buffer:
+            self.buffer.save(self.checkpoint_path / "buffer.pt")
         torch.save(self.actor_optimizer.state_dict(), self.checkpoint_path / "actor_opt.pt")
         torch.save(self.critic_optimizer.state_dict(), self.checkpoint_path / "critic_opt.pt")
         torch.save(

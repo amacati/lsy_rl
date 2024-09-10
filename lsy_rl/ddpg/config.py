@@ -142,6 +142,7 @@ class EvalConfig:
 class CheckpointConfig:
     period: int | None = None
     path: Path | None = None
+    save_buffer: bool = False
 
     def __post_init__(self):
         if self.period is False:  # TOML can't represent None, use False instead and convert to None
