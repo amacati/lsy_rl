@@ -82,6 +82,7 @@ class TD3(DDPG):
     def train_policy(self):
         """Train the policy using the collected samples in the replay buffer."""
         self.policy.actor.train()  # Critic is always in train mode, not used for inference
+        self.policy.actor.mode = "train"
 
         for _ in range(self.cfg.train.steps):
             # Update 'num_train_steps' at the beginning of the loop so that lower frequency updates
@@ -150,6 +151,7 @@ class TD3(DDPG):
 
     def _parse_config(self, config: SimpleNamespace, env: gymnasium.vector.VectorEnv) -> TD3Config:
         env_config = EnvConfig(**config.env)
+        env_config.env = env
         rollout_config = RolloutConfig(**config.rollout)
         train_config = TrainConfig(**config.train)
         eval_config = EvalConfig(**config.eval)
