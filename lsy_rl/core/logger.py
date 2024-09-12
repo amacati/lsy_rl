@@ -16,26 +16,21 @@ class Logger(ABC):
         super().__init__()
 
     @abstractmethod
-    def log(self, data: dict, step: int, flush: bool = False):
-        ...
+    def log(self, data: dict, step: int, flush: bool = False): ...
 
     @abstractmethod
-    def flush(self):
-        ...
+    def flush(self): ...
 
-    def stop(self):
-        ...
+    def stop(self): ...
 
 
 class EmptyLogger(Logger):
     def __init__(self):
         super().__init__()
 
-    def log(self, data: dict, step: int, flush: bool = False):
-        ...
+    def log(self, data: dict, step: int, flush: bool = False): ...
 
-    def flush(self):
-        ...
+    def flush(self): ...
 
 
 class LoggerList(Logger):
@@ -153,6 +148,7 @@ class WandBLogger(Logger):
         super().__init__()
         import wandb  # Import on class init to avoid unnecessary non-optional dependencies
 
+        save_path.mkdir(exist_ok=True, parents=True)
         # Load config from file if not provided directly
         config = config or load_config(config_path)
         self._check_wandb_config(config)
