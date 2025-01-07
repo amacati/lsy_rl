@@ -79,12 +79,11 @@ class RolloutConfig:
         if "reward_fn" in self.replay_buffer_kwargs:
             if isinstance(self.replay_buffer_kwargs["reward_fn"], Callable):
                 return
-            if isinstance(env, gymnasium.vector.VectorEnv) or isinstance(
-                env, gymnasium.experimental.vector.VectorEnv
-            ):
-                env = env.env_fns[0]()
+            if isinstance(env.unwrapped, gymnasium.vector.SyncVectorEnv):
+                env = env.envs[0]
             else:
-                raise ValueError("Replay buffer reward_fn only works with vectorized environments")
+                raise TypeError("Auto-detection of reward function failed")
+            assert hasattr(env.unwrapped, "compute_reward"), "No environment reward function found"
             self.replay_buffer_kwargs["reward_fn"] = env.unwrapped.compute_reward
 
 

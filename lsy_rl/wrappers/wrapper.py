@@ -1,5 +1,5 @@
 import torch
-from gymnasium.experimental.vector import VectorEnv
+from gymnasium.vector import VectorEnv
 
 from lsy_rl.wrappers.orbit_wrapper import OrbitWrapper
 from lsy_rl.wrappers.tensordict_wrapper import DefaultTensorDictWrapper, TensorDictWrapper
@@ -7,7 +7,7 @@ from lsy_rl.wrappers.tensordict_wrapper import DefaultTensorDictWrapper, TensorD
 
 def contains_wrapper(env: VectorEnv, wrapper_type: type) -> bool:
     """Check if the environment contains a wrapper of the given type."""
-    while not env is env.unwrapped:
+    while env is not env.unwrapped:
         if isinstance(env, wrapper_type):
             return True
         env = env.env

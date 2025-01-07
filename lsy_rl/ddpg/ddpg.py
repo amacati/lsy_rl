@@ -159,21 +159,21 @@ class DDPG(Algorithm):
             action = self.cfg.rollout.action_transform(action)
             sample = self.env.step(action)
             sample["obs"], sample["action"] = obs["obs"], action
-            # Vector environments automatically reset after T steps. The last observation is
-            # already the first observation of the next episode. We have to handle two cases:
-            # 1) When we continue sampling, we want obs["obs"] to be the first observation of the
-            # next episode.
-            # 2) The sample added to the buffer should have the terminal observation as next_obs.
-            obs["obs"] = sample["next_obs"]  # Avoid cloning if we don't need to
-
+            obs["obs"] = sample["next_obs"]
             done = sample["terminated"] | sample["truncated"]
-            if torch.any(done):  # Case 2: Replace sample next_obs with the final observation
-                # Case 1: Make obs["obs"] the first observation of the next episode. We need to
-                # clone the sample because we will modify it in the next step
-                obs["obs"] = sample["next_obs"].clone()
-                # Case 2: Replace the next_obs with the final observation
-                sample["next_obs"][done] = sample["info", "final_observation"][done]
+
+            # Vector environments automatically reset after T steps. This reset happens on the next
+            # step. This reset step produces an inconsistent (obs, next_obs) tuple that has to be
+            # discarded. To see how this is handled in gymnasium >= 1.0, see
+            # https://github.com/Farama-Foundation/Gymnasium/releases/tag/v1.0.0.
+            if self.rollout_info.autoreset:
+                self.rollout_info.autoreset = torch.all(done)
+                continue
+
+            # TODO: Add support for variable rollout length
+            assert torch.all(done) or not torch.any(done), "Variable rollout length not supported"
             self.buffer.add(sample)
+            self.rollout_info.autoreset = torch.all(done)
 
             self.rollout_info.n_samples += self.env.num_envs
             self.rollout_info.steps += 1
@@ -265,6 +265,7 @@ class DDPG(Algorithm):
         self.policy.actor.eval()
         self.policy.actor.mode = "eval"
         obs = self.eval_env.reset()
+        autoreset = False
         n_samples = 0
         rewards, ep_rewards, ep_steps, ep_last_rewards = [], [], [], []
         while n_samples < self.cfg.eval.steps:
@@ -273,17 +274,22 @@ class DDPG(Algorithm):
             action = self.cfg.eval.action_transform(action)
             sample = self.eval_env.step(action)
             obs["obs"] = sample["next_obs"]
+            done = sample["terminated"] | sample["truncated"]
+            if autoreset:  # As in rollout, we discard the reset step of the rollouts for the stats
+                autoreset = torch.all(done)
+                continue
+            autoreset = torch.all(done)
+
             self.eval_info.rewards += sample["reward"]
             rewards += sample["reward"].tolist()
             self.eval_info.steps += 1
 
-            if torch.any(sample["terminated"]) or torch.any(sample["truncated"]):
-                idx = sample["terminated"] | sample["truncated"]
-                ep_steps += self.eval_info.steps[idx].tolist()
-                ep_rewards += self.eval_info.rewards[idx].tolist()
-                ep_last_rewards += sample["reward"][idx].tolist()
-                self.eval_info.steps[idx] = 0
-                self.eval_info.rewards[idx] = 0
+            if torch.any(done):
+                ep_steps += self.eval_info.steps[done].tolist()
+                ep_rewards += self.eval_info.rewards[done].tolist()
+                ep_last_rewards += sample["reward"][done].tolist()
+                self.eval_info.steps[done] = 0
+                self.eval_info.rewards[done] = 0
 
             n_samples += self.eval_env.num_envs
 

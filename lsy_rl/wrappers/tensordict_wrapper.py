@@ -5,14 +5,15 @@ from typing import Any, Callable
 
 import numpy as np
 import torch
-from gymnasium import Env, Wrapper
+from gymnasium import Env
+from gymnasium.vector import VectorWrapper
 from tensordict import TensorDict
 from torch import Tensor
 
 logger = logging.getLogger(__name__)
 
 
-class TensorDictWrapper(Wrapper, ABC):
+class TensorDictWrapper(VectorWrapper, ABC):
     def __init__(self, env: Env):
         super().__init__(env)
 
@@ -38,7 +39,6 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
 
     def __init__(self, env: Env, device: torch.device = torch.device("cpu")):
         super().__init__(env)
-        self.num_envs = env.num_envs
         self.device = device
 
         # Infer the device of the environment. If the environment action space is a numpy array,
