@@ -163,7 +163,7 @@ class DDPG(Algorithm):
             done = sample["terminated"] | sample["truncated"]
 
             # Vector environments automatically reset after T steps. This reset happens on the next
-            # step. This reset step produces an inconsistent (obs, next_obs) tuple that has to be
+            # step. The reset step produces an inconsistent (obs, next_obs) tuple that has to be
             # discarded. To see how this is handled in gymnasium >= 1.0, see
             # https://github.com/Farama-Foundation/Gymnasium/releases/tag/v1.0.0.
             if self.rollout_info.autoreset:
@@ -450,6 +450,7 @@ class DDPG(Algorithm):
         info.last_log = 0
         info.log = Munch({"ep_steps": 0, "ep_reward": 0, "n_episodes": 0, "last_rewards": []})
         info.start_time = time.time()
+        info.autoreset = False
         return info
 
     def _init_train_info(self) -> Munch:

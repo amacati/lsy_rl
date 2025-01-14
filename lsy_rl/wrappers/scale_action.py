@@ -2,7 +2,6 @@
 
 from typing import Any
 
-import gymnasium
 import torch
 from gymnasium.spaces import Box
 from tensordict import TensorDict

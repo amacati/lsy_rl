@@ -18,14 +18,12 @@ class TensorDictWrapper(VectorWrapper, ABC):
         super().__init__(env)
 
     @abstractmethod
-    def step(self, action: Tensor) -> TensorDict[str, Tensor]:
-        ...
+    def step(self, action: Tensor) -> TensorDict[str, Tensor]: ...
 
     @abstractmethod
     def reset(
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
-    ) -> TensorDict:
-        ...
+    ) -> TensorDict: ...
 
 
 class DefaultTensorDictWrapper(TensorDictWrapper):
@@ -59,11 +57,11 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
         sample = TensorDict({"action": action}, batch_size=self.num_envs, device=self.device)
         action = self.transform_action(action)  # Convert to np if necessary or send to env_device
         next_obs, reward, terminated, truncated, info = self.env.step(action)
-        sample["next_obs"] = self.transform_obs(next_obs).clone()
-        sample["reward"] = torch.as_tensor(reward, dtype=torch.float64).clone()
-        sample["terminated"] = torch.as_tensor(terminated).clone()
-        sample["truncated"] = torch.as_tensor(truncated).clone()
-        sample["info"] = self.transform_info(info).clone()
+        sample["next_obs"] = self.transform_obs(next_obs)
+        sample["reward"] = torch.as_tensor(reward, dtype=torch.float64)
+        sample["terminated"] = torch.as_tensor(terminated)
+        sample["truncated"] = torch.as_tensor(truncated)
+        sample["info"] = self.transform_info(info)
         return sample
 
     def reset(
@@ -71,8 +69,8 @@ class DefaultTensorDictWrapper(TensorDictWrapper):
     ) -> tuple[Tensor, dict[str, Any]]:
         obs, info = self.env.reset(seed=seed, options=options)
         sample = TensorDict({}, batch_size=self.num_envs, device=self.device)
-        sample["obs"] = self.transform_obs(obs).clone()
-        sample["info"] = self.transform_info(info).clone()
+        sample["obs"] = self.transform_obs(obs)
+        sample["info"] = self.transform_info(info)
         return sample
 
     def transform_obs(
