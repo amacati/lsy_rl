@@ -16,21 +16,26 @@ class Logger(ABC):
         super().__init__()
 
     @abstractmethod
-    def log(self, data: dict, step: int, flush: bool = False): ...
+    def log(self, data: dict, step: int, flush: bool = False):
+        ...
 
     @abstractmethod
-    def flush(self): ...
+    def flush(self):
+        ...
 
-    def stop(self): ...
+    def stop(self):
+        ...
 
 
 class EmptyLogger(Logger):
     def __init__(self):
         super().__init__()
 
-    def log(self, data: dict, step: int, flush: bool = False): ...
+    def log(self, data: dict, step: int, flush: bool = False):
+        ...
 
-    def flush(self): ...
+    def flush(self):
+        ...
 
 
 class LoggerList(Logger):
@@ -137,42 +142,15 @@ class FileLogger(Logger):
 
 
 class WandBLogger(Logger):
-    def __init__(
-        self,
-        wandb_api_key: str,
-        save_path: Path,
-        config: Munch | None = None,
-        config_path: Path | None = None,
-    ):
-        assert config is not None or config_path is not None, "Must provide config or config_path."
+    def __init__(self):
         super().__init__()
         import wandb  # Import on class init to avoid unnecessary non-optional dependencies
 
-        save_path.mkdir(exist_ok=True, parents=True)
-        # Load config from file if not provided directly
-        config = config or load_config(config_path)
-        self._check_wandb_config(config)
-        wandb.login(key=wandb_api_key)
-        self.run = wandb.init(
-            project=config.wandb.project,
-            entity=config.wandb.entity,
-            group=config.wandb.group,
-            config=config,
-            dir=save_path,
-        )
+        assert wandb.run is not None, "WandB must be initialized before creating a WandBLogger"
+        self.run = wandb.run
 
     def log(self, data, step: int, flush: bool = False):
         self.run.log(data, step=step, commit=flush)
 
     def flush(self):
         self.run.log({}, commit=True)
-
-    def stop(self):
-        self.run.finish()
-
-    def _check_wandb_config(self, config: Munch):
-        if "wandb" not in config:
-            raise AttributeError("WandB config missing 'wandb' namespace.")
-        for attr in ["project", "entity", "group"]:
-            if attr not in config.wandb:
-                raise AttributeError(f"WandB config missing attribute '{attr}' in wandb namespace.")
