@@ -20,8 +20,7 @@ from lsy_rl.ddpg.config import (
     TrainConfig,
 )
 from lsy_rl.ddpg.policy import DDPGPolicy
-from lsy_rl.utils.utils import unique_folder
-from lsy_rl.wrappers.wrapper import wrap_env
+from lsy_rl.utils.utils import tensordict_sample, unique_folder
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +52,9 @@ class DDPG(Algorithm):
         assert hasattr(env, "num_envs"), "The environment must have a 'num_envs' attribute."
         self.cfg = self._parse_config(config, env)
         # Create wrapped environments so that the observations and actions are always Tensors
-        self.env = wrap_env(env, device=self.cfg.train.device)
-        self.eval_env = wrap_env(eval_env, device=self.cfg.train.device)
-        self.separate_eval_env = self.env.unwrapped is not self.eval_env.unwrapped
+        self.env = env
+        self.eval_env = eval_env
+        self.separate_eval_env = env is eval_env
 
         # Set random seeds
         self.seed = seed
@@ -146,21 +145,32 @@ class DDPG(Algorithm):
         self.policy.actor.eval()
         self.policy.actor.mode = "rollout"
 
-        if "obs" not in self.rollout_info:  # If first rollout, reset the environment
-            self.rollout_info.obs = self.env.reset()
+        if self.rollout_info.obs is None:  # If first rollout, reset the environment
+            obs, info = self.env.reset()
+            obs = obs.to(self.cfg.train.device)
+            self.rollout_info.obs = obs
         obs = self.rollout_info.obs
 
         # Calculate how many samples to collect before we need to interrupt for any callbacks
         required_samples = self.rollout_info.n_samples + self._next_required_samples()
         while self.rollout_info.n_samples < required_samples:
-            self.cfg.rollout.obs_transform.update(obs["obs"])
-            obs_t = self.cfg.rollout.obs_transform(obs["obs"])
+            self.cfg.rollout.obs_transform.update(obs)
+            obs_t = self.cfg.rollout.obs_transform(obs)
             action = self.policy.actor(obs_t)
             action = self.cfg.rollout.action_transform(action)
-            sample = self.env.step(action)
-            sample["obs"], sample["action"] = obs["obs"], action
-            obs["obs"] = sample["next_obs"]
-            done = sample["terminated"] | sample["truncated"]
+            next_obs, reward, terminated, truncated, info = self.env.step(action)
+            sample = tensordict_sample(
+                obs,
+                action,
+                next_obs,
+                reward,
+                terminated,
+                truncated,
+                info,
+                device=self.cfg.train.device,
+            )
+            obs = sample["next_obs"]
+            done = terminated | truncated
 
             # Vector environments automatically reset after T steps. This reset happens on the next
             # step. The reset step produces an inconsistent (obs, next_obs) tuple that has to be
@@ -264,17 +274,28 @@ class DDPG(Algorithm):
         """Evaluate the policy on the evaluation environment and log the results."""
         self.policy.actor.eval()
         self.policy.actor.mode = "eval"
-        obs = self.eval_env.reset()
+        obs, _ = self.eval_env.reset()
+        obs = obs.to(self.cfg.train.device)
         autoreset = False
         n_samples = 0
         rewards, ep_rewards, ep_steps, ep_last_rewards = [], [], [], []
         while n_samples < self.cfg.eval.steps:
-            obs_t = self.cfg.eval.obs_transform(obs["obs"])
+            obs_t = self.cfg.eval.obs_transform(obs)
             action = self.policy.action(obs_t)
             action = self.cfg.eval.action_transform(action)
-            sample = self.eval_env.step(action)
-            obs["obs"] = sample["next_obs"]
-            done = sample["terminated"] | sample["truncated"]
+            next_obs, reward, terminated, truncated, info = self.eval_env.step(action)
+            sample = tensordict_sample(
+                obs,
+                action,
+                next_obs,
+                reward,
+                terminated,
+                truncated,
+                info,
+                device=self.cfg.train.device,
+            )
+            obs = sample["next_obs"]
+            done = terminated | truncated
             if autoreset:  # As in rollout, we discard the reset step of the rollouts for the stats
                 autoreset = torch.all(done)
                 continue
@@ -311,7 +332,7 @@ class DDPG(Algorithm):
         # rollout info. Otherwise, the next rollout will start from the last state of the eval env,
         # but will still use the last observation from the latest rollout
         if not self.separate_eval_env:
-            self.rollout_info.obs = self.env.reset()
+            self.rollout_info.obs, _ = self.env.reset()
         self.policy.actor.train()
         return data
 
@@ -451,6 +472,7 @@ class DDPG(Algorithm):
         info.log = Munch({"ep_steps": 0, "ep_reward": 0, "n_episodes": 0, "last_rewards": []})
         info.start_time = time.time()
         info.autoreset = False
+        info.last_obs = None
         return info
 
     def _init_train_info(self) -> Munch:

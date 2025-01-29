@@ -1,7 +1,8 @@
-from lsy_rl.core.transforms import IdentityTF, ClipTF, to_transforms
-import torch
 import numpy as np
 import pytest
+import torch
+
+from lsy_rl.core.transforms import ClipTF, IdentityTF, to_transforms
 
 
 @pytest.mark.unit

@@ -10,6 +10,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 from munch import Munch, munchify
+from tensordict import TensorDict
+from torch import Tensor
 
 logger = logging.getLogger(__name__)
 
@@ -178,3 +180,45 @@ def required_args(cls: type) -> list[str]:
         The required arguments for the class.
     """
     return [p.name for p in inspect.signature(cls).parameters.values() if p.default == p.empty]
+
+
+def tensordict_sample(
+    obs: Tensor,
+    action: Tensor,
+    next_obs: Tensor,
+    reward: Tensor,
+    terminated: Tensor,
+    truncated: Tensor,
+    info: Tensor,
+    device: torch.device | None = None,
+) -> TensorDict:
+    """Create a TensorDict sample from the environment.
+
+    Expects tensors to be batched over environments.
+
+    Args:
+        obs: The observation.
+        action: The action.
+        next_obs: The next observation.
+        reward: The reward.
+        terminated: The terminated flag.
+        truncated: The truncated flag.
+        info: The info.
+        device: The device to store the TensorDict on.
+
+    Returns:
+        The TensorDict sample.
+    """
+    return TensorDict(
+        {
+            "obs": obs,
+            "action": action,
+            "next_obs": next_obs,
+            "reward": reward,
+            "terminated": terminated,
+            "truncated": truncated,
+            "info": info,
+        },
+        batch_size=obs.shape[0],
+        device=device,
+    )

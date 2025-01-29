@@ -42,7 +42,6 @@ class DDPGConfig:
         self.rollout.obs_transform = self.rollout.obs_transform.to(dev)
         self.eval.action_transform = self.eval.action_transform.to(dev)
         self.eval.obs_transform = self.eval.obs_transform.to(dev)
-        self.rollout.finalize(self.env.env)
 
 
 @dataclass
@@ -74,17 +73,6 @@ class RolloutConfig:
             self.replay_buffer_cls,
             ignore=["num_envs", "device", "reward_fn"],
         )
-
-    def finalize(self, env: gymnasium.Env):
-        if "reward_fn" in self.replay_buffer_kwargs:
-            if isinstance(self.replay_buffer_kwargs["reward_fn"], Callable):
-                return
-            if isinstance(env.unwrapped, gymnasium.vector.SyncVectorEnv):
-                env = env.envs[0]
-            else:
-                raise TypeError("Auto-detection of reward function failed")
-            assert hasattr(env.unwrapped, "compute_reward"), "No environment reward function found"
-            self.replay_buffer_kwargs["reward_fn"] = env.unwrapped.compute_reward
 
 
 @dataclass

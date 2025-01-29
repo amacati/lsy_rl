@@ -17,7 +17,6 @@ from lsy_rl.td3.config import (
 )
 from lsy_rl.td3.policy import TD3Policy
 from lsy_rl.utils.utils import unique_folder
-from lsy_rl.wrappers.wrapper import wrap_env
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +40,7 @@ class TD3(DDPG):
             seed: Random seed used for reproducibility. Defaults to None, i.e. no seed.
         """
         assert hasattr(env, "num_envs"), "The environment must have a 'num_envs' attribute."
+        raise NotImplementedError("Not adapted to gymnasium 1.0 style wrappers yet")
         self.cfg = self._parse_config(config, env)
         # Create wrapped environments so that the observations and actions are always Tensors
         self.env = wrap_env(env, device=self.cfg.train.device)
