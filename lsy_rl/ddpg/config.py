@@ -4,8 +4,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-import gymnasium
-import gymnasium.vector.async_vector_env
 import torch
 
 from lsy_rl.core.replay_buffer import ReplayBuffer, SimpleReplayBuffer, replay_buffer_cls
@@ -14,6 +12,7 @@ from lsy_rl.ddpg.policy import DDPGActor, DDPGCritic
 from lsy_rl.utils.utils import check_kwargs, to_cls
 
 if TYPE_CHECKING:
+    import gymnasium
     import numpy as np
 
 
@@ -85,7 +84,7 @@ class TrainConfig:
     critic_target_period: int = 2
     actor_lr: float = 1e-4
     critic_lr: float = 1e-3
-    min_samples: int = 1
+    min_samples: int | None = None
     actor_cls: type[DDPGActor] = DDPGActor
     actor_kwargs: dict[str, Any] = field(default_factory=dict)
     critic_cls: type[DDPGCritic] = DDPGCritic

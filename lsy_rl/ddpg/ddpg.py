@@ -97,8 +97,9 @@ class DDPG(Algorithm):
     @property
     def train_condition(self) -> bool:
         """Check if we should train the policy based on how many samples we have collected."""
-        if self.rollout_info.n_samples < self.cfg.train.min_samples:
-            return False
+        if self.cfg.train.min_samples is not None:
+            if self.rollout_info.n_samples < self.cfg.train.min_samples:
+                return False
         return self.rollout_info.n_samples - self.train_info.n_samples >= self.cfg.train.period
 
     @property
@@ -146,9 +147,8 @@ class DDPG(Algorithm):
         self.policy.actor.mode = "rollout"
 
         if self.rollout_info.obs is None:  # If first rollout, reset the environment
-            obs, info = self.env.reset()
-            obs = obs.to(self.cfg.train.device)
-            self.rollout_info.obs = obs
+            obs, _ = self.env.reset()
+            self.rollout_info.obs = obs.to(self.cfg.train.device)
         obs = self.rollout_info.obs
 
         # Calculate how many samples to collect before we need to interrupt for any callbacks
@@ -158,7 +158,7 @@ class DDPG(Algorithm):
             obs_t = self.cfg.rollout.obs_transform(obs)
             action = self.policy.actor(obs_t)
             action = self.cfg.rollout.action_transform(action)
-            next_obs, reward, terminated, truncated, info = self.env.step(action)
+            next_obs, reward, terminated, truncated, info = self.env.step(action.cpu())
             sample = tensordict_sample(
                 obs,
                 action,
@@ -196,7 +196,6 @@ class DDPG(Algorithm):
                 self.rollout_info.log.last_rewards.extend(sample["reward"][done].tolist())
                 self.rollout_info.steps[done] = 0
                 self.rollout_info.rewards[done] = 0
-
             self._log_rollout()
 
         self.rollout_info.obs = obs
@@ -283,7 +282,7 @@ class DDPG(Algorithm):
             obs_t = self.cfg.eval.obs_transform(obs)
             action = self.policy.action(obs_t)
             action = self.cfg.eval.action_transform(action)
-            next_obs, reward, terminated, truncated, info = self.eval_env.step(action)
+            next_obs, reward, terminated, truncated, info = self.eval_env.step(action.cpu())
             sample = tensordict_sample(
                 obs,
                 action,
@@ -427,12 +426,10 @@ class DDPG(Algorithm):
             torch.manual_seed(seed)
             np.random.seed(seed)
             random.seed(seed)
-            env_seed = [i + seed for i in range(self.env.num_envs)]
-            self.env.reset(seed=env_seed)  # Reset once to set the correct RNG state
+            self.env.reset(seed=seed)  # Reset once to set the correct RNG state
             # Make sure the seeds for the eval envs are different from the train envs
-            eval_env_seed = [i + seed + self.env.num_envs for i in range(self.eval_env.num_envs)]
             if self.separate_eval_env:  # Only reset if the eval env is not also the train env
-                self.eval_env.reset(seed=eval_env_seed)
+                self.eval_env.reset(seed=seed + 1)
 
     def _parse_config(self, config: SimpleNamespace, env: gymnasium.vector.VectorEnv) -> DDPGConfig:
         env_config = EnvConfig(**config.env)

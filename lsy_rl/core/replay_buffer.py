@@ -255,7 +255,6 @@ class VectorReplayBuffer(ReplayBuffer):
         Args:
             batch_size: The batch size.
         """
-        assert batch_size <= torch.sum(self._maxidx + 1), "Not enough samples in the buffer"
         v_idx = torch.randint(self.num_envs, size=(batch_size,), device=self.device)
         idx = self.rng.integers(self._maxidx[v_idx].cpu() + 1, size=batch_size)
         idx = torch.tensor(idx).to(self.device)
@@ -316,6 +315,7 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
             seed: Random seed.
         """
         super().__init__(num_envs, max_size, device, seed)
+        assert isinstance(reward_fn, Callable), "Reward function must be a callable"
         self.reward_fn = reward_fn
         self.p_her = p_her
         # We track the remaining steps to the end of the trajectory for each environment. The is
