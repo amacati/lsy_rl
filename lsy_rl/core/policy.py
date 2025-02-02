@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
-from pathlib import Path
 
-from torch import FloatTensor, Tensor
+from torch import Tensor
 
 
 class Policy(ABC):
@@ -9,10 +8,4 @@ class Policy(ABC):
         super().__init__()
 
     @abstractmethod
-    def action(self, obs: FloatTensor) -> Tensor: ...
-
-    @abstractmethod
-    def save(self, path: Path): ...
-
-    @abstractmethod
-    def load(self, path: Path): ...
+    def action(self, obs: Tensor) -> Tensor: ...

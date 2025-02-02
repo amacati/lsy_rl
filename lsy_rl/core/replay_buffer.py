@@ -33,11 +33,6 @@ class ReplayBuffer(ABC):
         pass
 
     @abstractmethod
-    def sample(self, batch_size: int) -> TensorDict[torch.Tensor]:
-        """Sample a batch of transitions from the buffer."""
-        pass
-
-    @abstractmethod
     def clear(self):
         """Clear the replay buffer."""
         pass
@@ -56,6 +51,17 @@ class ReplayBuffer(ABC):
     def __len__(self) -> int:
         """Return the number of valid samples in the buffer."""
         pass
+
+
+def _allocate_buffers(buffer: TensorDict, sample: TensorDict) -> TensorDict:
+    for key, val in sample.items():
+        if key not in buffer.keys():
+            if isinstance(val, torch.Tensor):
+                buffer[key] = torch.zeros((*buffer.batch_size, *val.shape[1:]), dtype=val.dtype)
+            elif isinstance(val, TensorDict):
+                buffer[key] = TensorDict({}, batch_size=(buffer.batch_size), device=buffer.device)
+            else:
+                raise TypeError(f"Unsupported type {type(val)}")
 
 
 class SimpleReplayBuffer(ReplayBuffer):
@@ -97,7 +103,7 @@ class SimpleReplayBuffer(ReplayBuffer):
         num_samples = sample.batch_size[0]
         assert num_samples < self.max_size, "Vectorized sample size must be smaller than the buffer"
         # Check if there are unknown keys in the sample and allocate buffers for them if necessary
-        self._allocate_buffers(sample)
+        self._allocate_buffers(sample)  # TODO: Replace with module _allocate_buffers
         # If num_samples + self._idx > self.max_size, the index wraps around to the beginning of the
         # buffer. We take the index vector modulo ``self.max_size`` to implement this behavior.
         idx = torch.arange(self._idx, self._idx + num_samples) % self.max_size
@@ -156,6 +162,79 @@ class SimpleReplayBuffer(ReplayBuffer):
         return self._maxidx + 1
 
 
+class TrajectoryBuffer(ReplayBuffer):
+    """Vectorized trajectory buffer."""
+
+    def __init__(
+        self, num_envs: int, trajectory_len: int, device: torch.device = torch.device("cpu")
+    ):
+        """Initialize the vectorized trajectory buffer.
+
+        Args:
+            num_envs: Number of environments.
+            max_size: Maximum size of the buffer.
+            device: Buffer device.
+        """
+        super().__init__()
+        self.num_envs = num_envs
+        self.trajectory_len = trajectory_len
+        # Allocate buffers
+        self.device = device
+        self.buffer = TensorDict({}, batch_size=(self.num_envs, self.trajectory_len), device=device)
+        # Allocate helper for default environment indexing
+        self._env_idx = torch.arange(self.num_envs, dtype=int, device=device)
+        self._mask = torch.ones(self.num_envs, dtype=torch.bool, device=device)
+        # Helper indices pointing to the current buffer write position
+        self._idx = torch.zeros(self.num_envs, dtype=int, device=device)
+
+    def add(self, sample: TensorDict[torch.Tensor], mask: torch.Tensor | None = None):
+        """Add a vector sample to the buffer."""
+        # If no mask is given, assume one sample per env
+        mask = self._mask if mask is None else mask
+        v_idx = self._env_idx[mask]
+        assert torch.all(self._idx[v_idx] < self.trajectory_len), "Buffer overflow"
+        assert sample.batch_size[0] == v_idx.shape[0], "Sample size must match the env index"
+        # Check if there are unknown keys in the sample and allocate buffers for them if necessary
+        _allocate_buffers(self.buffer, sample)
+        # Compute the indices for each sample
+        self.buffer[v_idx, self._idx[v_idx]] = sample
+        # Update the helper indices
+        self._idx[v_idx] += 1
+
+    def clear(self):
+        """Clear the replay buffer."""
+        for b in self.buffer.values():
+            b.zero_()
+        self._idx[...] = 0
+
+    def save(self, path: Path):
+        """Save the replay buffer to a file.
+
+        Args:
+            path: The path to the file.
+        """
+        save_dict = {"idx": self._idx, "buffer": self.buffer}
+        torch.save(save_dict, path)
+
+    def load(self, path: Path):
+        """Load the replay buffer from a file.
+
+        Args:
+            path: The path to the file.
+        """
+        save_dict = torch.load(path, map_location=self.device)
+        self._idx, self.buffer = save_dict["idx"], save_dict["buffer"]
+        assert self.buffer.batch_size == self.bufflen, "Loaded buffer has wrong size"
+
+    def __len__(self) -> int:
+        """Return the number of valid samples in the buffer."""
+        return torch.sum(self._idx).item()
+
+    def __getitem__(self, key: str) -> torch.Tensor:
+        """Get a sample from the buffer."""
+        return self.buffer[key]
+
+
 class VectorReplayBuffer(ReplayBuffer):
     """Vectorized replay buffer for multiple environments."""
 
@@ -204,9 +283,9 @@ class VectorReplayBuffer(ReplayBuffer):
         """
         # If no explicit environment index given, assume one sample per env
         v_idx = v_idx or self._default_v_idx
-        sample.batch_size[0] == v_idx.shape[0], "Sample size must match the env index"
+        assert sample.batch_size[0] == v_idx.shape[0], "Sample size must match the env index"
         # Check if there are unknown keys in the sample and allocate buffers for them if necessary
-        self._allocate_buffers(sample)
+        self._allocate_buffers(sample)  # TODO: Replace with module _allocate_buffers
         # Count the number of samples per environment
         num_samples = torch.bincount(v_idx, minlength=self.num_envs).to(self.device)
         assert torch.max(num_samples) < self.bufflen, "Sample sizes must be smaller than the buffer"
@@ -337,7 +416,7 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
 
         If the buffer is full, overwrite the oldest samples.
         """
-        self._allocate_buffers(sample)
+        self._allocate_buffers(sample)  # TODO: Replace with module _allocate_buffers
         # A sample must contain exactly one sample per vector entry
         v_idx = self._default_v_idx
         assert sample.batch_size[0] == v_idx.shape[0], "Sample size must match the env index"
