@@ -13,16 +13,12 @@ def cuda_not_available() -> bool:
     return not torch.cuda.is_available()
 
 
-@pytest.mark.parametrize(
-    "device",
-    (
-        torch.device("cpu"),
-        pytest.param(
-            torch.device("cuda"),
-            marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."),
-        ),
-    ),
+maybe_cuda = pytest.param(
+    "cuda", marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available.")
 )
+
+
+@pytest.mark.parametrize("device", ("cpu", maybe_cuda))
 @pytest.mark.parametrize("vectorization_mode", ("sync", "async"))
 @pytest.mark.integration
 def test_init(device: torch.device, vectorization_mode: str):
@@ -33,16 +29,7 @@ def test_init(device: torch.device, vectorization_mode: str):
     assert isinstance(td3, Algorithm)
 
 
-@pytest.mark.parametrize(
-    "device",
-    (
-        torch.device("cpu"),
-        pytest.param(
-            torch.device("cuda"),
-            marks=pytest.mark.skipif(cuda_not_available(), reason="Cuda not available."),
-        ),
-    ),
-)
+@pytest.mark.parametrize("device", ("cpu", maybe_cuda))
 @pytest.mark.parametrize("vectorization_mode", ("sync", "async"))
 @pytest.mark.parametrize("batch_size", (1, 3))
 @pytest.mark.integration

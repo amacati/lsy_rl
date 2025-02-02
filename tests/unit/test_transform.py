@@ -18,9 +18,9 @@ def test_identity_tf():
 def test_clip_tf():
     x = torch.linspace(-2, 2, 10)
     clip_tf = ClipTF(-1, 1)
-    assert torch.allclose(
-        clip_tf(x), torch.clamp(x, -1, 1)
-    ), "Clip transform should clip the input."
+    assert torch.allclose(clip_tf(x), torch.clamp(x, -1, 1)), (
+        "Clip transform should clip the input."
+    )
 
 
 @pytest.mark.unit
