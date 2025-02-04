@@ -180,7 +180,7 @@ class TrajectoryBuffer(ReplayBuffer):
         self.trajectory_len = trajectory_len
         # Allocate buffers
         self.device = device
-        self.buffer = TensorDict({}, batch_size=(self.num_envs, self.trajectory_len), device=device)
+        self.buffer = TensorDict({}, batch_size=(self.trajectory_len, self.num_envs), device=device)
         # Allocate helper for default environment indexing
         self._env_idx = torch.arange(self.num_envs, dtype=int, device=device)
         self._mask = torch.ones(self.num_envs, dtype=torch.bool, device=device)
@@ -197,7 +197,7 @@ class TrajectoryBuffer(ReplayBuffer):
         # Check if there are unknown keys in the sample and allocate buffers for them if necessary
         _allocate_buffers(self.buffer, sample)
         # Compute the indices for each sample
-        self.buffer[v_idx, self._idx[v_idx]] = sample
+        self.buffer[self._idx[v_idx], v_idx] = sample
         # Update the helper indices
         self._idx[v_idx] += 1
 
@@ -225,6 +225,10 @@ class TrajectoryBuffer(ReplayBuffer):
         save_dict = torch.load(path, map_location=self.device)
         self._idx, self.buffer = save_dict["idx"], save_dict["buffer"]
         assert self.buffer.batch_size == self.bufflen, "Loaded buffer has wrong size"
+
+    def full(self) -> bool:
+        """Check if the buffer is full."""
+        return torch.all(self._idx == self.trajectory_len)
 
     def __len__(self) -> int:
         """Return the number of valid samples in the buffer."""

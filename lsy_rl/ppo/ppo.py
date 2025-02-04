@@ -109,47 +109,55 @@ def ppo(
 
     # Stats tracking setup
     global_step = 0
-    eval_rewards_hist = []
-    eval_rewards_steps = []
+    ep_rewards = torch.zeros(n_envs, dtype=torch.float32, device=device)
+    ep_steps = torch.zeros(n_envs, dtype=torch.int32, device=device)
     last_eval = global_step
-    rewards = torch.zeros(n_envs, dtype=torch.float32, device=device)
     autoreset = torch.zeros(n_envs, dtype=bool, device=device)
 
     obs, _ = train_envs.reset(seed=seed)
 
     for iteration in range(1, n_iterations + 1):
-        start_time = time.perf_counter()
-        steps = torch.zeros(n_envs, dtype=torch.int32, device=device)
-        while any(active := (steps < n_steps)):
-            action, logprob, _, value = agent.action_and_value(obs)
-            next_obs, reward, terminated, truncated, info = train_envs.step(action)
-            done = terminated | truncated
-            rewards += reward
-            rewards[autoreset] = 0
-            if done.any():
-                # TODO: Add logging
-                for r in rewards[done]:
-                    ...
-            # Add sample to buffer
-            mask = active & ~autoreset
-            sample = TensorDict(
-                {
-                    "obs": obs[mask],
-                    "action": action[mask],
-                    "next_obs": next_obs[mask],
-                    "reward": reward[mask],
-                    "terminated": terminated[mask],
-                    "logprob": logprob[mask],
-                    "value": value[mask],
-                },
-                batch_size=mask.sum().item(),
-            )
-            buffer.add(sample, steps[mask], mask)
-            steps[mask] += 1
-            global_step += mask.sum().item()
+        with torch.no_grad():
+            start_time = time.perf_counter()
+            steps = torch.zeros(n_envs, dtype=torch.int32, device=device)
+            while any(active := (steps < n_steps)):
+                action, logprob, _, value = agent.action_and_value(obs)
+                next_obs, reward, terminated, truncated, info = train_envs.step(action)
+                done = terminated | truncated
+                ep_rewards += reward
+                ep_steps += 1
+                # Add sample to buffer
+                mask = active & ~autoreset
+                sample = TensorDict(
+                    {
+                        "obs": obs[mask],
+                        "action": action[mask],
+                        "next_obs": next_obs[mask],
+                        "reward": reward[mask],
+                        "terminated": terminated[mask],
+                        "logprob": logprob[mask],
+                        "value": value[mask].squeeze(),
+                    },
+                    batch_size=mask.sum().item(),
+                )
+                buffer.add(sample, mask)
+                steps[mask] += 1
+                global_step += mask.sum().item()
 
-            obs = next_obs
-            autoreset = done
+                if done.any():
+                    logger.log(
+                        {
+                            "rollout/ep_reward": ep_rewards[done].mean().item(),
+                            "rollout/ep_step": ep_steps[done].float().mean().item(),
+                        },
+                        step=global_step,
+                    )
+
+                ep_rewards[autoreset] = 0
+                ep_steps[autoreset] = 0
+                autoreset = done
+            assert buffer.full(), "Buffer is not full"
+            logger.log({"time/rollout": time.perf_counter() - start_time}, step=global_step)
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -159,17 +167,16 @@ def ppo(
             for t in reversed(range(n_steps)):
                 if t == n_steps - 1:
                     # TODO: Check that terminated is correct instead of dones
-                    nextnonterminal = 1.0 - buffer["terminated"][t]
+                    nextnonterminal = 1.0 - buffer["terminated"][t].float()
                     nextvalues = next_value
                 else:
-                    nextnonterminal = 1.0 - buffer["terminated"][t + 1]
-                    nextvalues = buffer["values"][t + 1]
+                    nextnonterminal = 1.0 - buffer["terminated"][t + 1].float()
+                    nextvalues = buffer["value"][t + 1]
                 future_reward = gamma * nextvalues * nextnonterminal
-                delta = buffer["reward"][t] + future_reward - buffer["values"][t]
-                advantages[t] = lastgaelam = (
-                    delta + gamma * gae_lambda * nextnonterminal * lastgaelam
-                )
-            returns = advantages + buffer["values"]
+                delta = buffer["reward"][t] + future_reward - buffer["value"][t]
+                lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
+                advantages[t] = lastgaelam
+            returns = advantages + buffer["value"]
 
         # flatten the batch
         b_obs = buffer["obs"].reshape((-1,) + train_envs.single_observation_space.shape)
@@ -182,6 +189,7 @@ def ppo(
         # Optimizing the policy and value network
         b_inds = np.arange(batch_size)
         clipfracs = []
+        tstart = time.perf_counter()
         for epoch in range(n_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, batch_size, minibatch_size):
@@ -196,7 +204,6 @@ def ppo(
 
                 with torch.no_grad():
                     # calculate approx_kl http://joschu.net/blog/kl-approx.html
-                    old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
                     clipfracs += [((ratio - 1.0).abs() > clip_coef).float().mean().item()]
 
@@ -234,41 +241,37 @@ def ppo(
 
             if target_kl is not None and approx_kl > target_kl:
                 break
+        logger.log({"time/train": time.perf_counter() - tstart}, step=global_step)
 
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+        logger.log(
+            {
+                "train/value_loss": v_loss.item(),
+                "train/policy_loss": pg_loss.item(),
+                "train/entropy_loss": entropy_loss.item(),
+                "train/old_approx_kl": (-logratio).mean().item(),
+                "train/approx_kl": approx_kl.item(),
+                "train/clipfrac": np.mean(clipfracs),
+                "train/explained_var": explained_var,
+            },
+            step=global_step,
+        )
 
         # Evaluate the agent
         if global_step - last_eval >= eval_interval:
+            tstart = time.perf_counter()
             sync_envs(train_envs, eval_envs)
             eval_rewards, eval_steps = evaluate_agent(
                 eval_envs, agent, n_steps=n_eval_steps, device=device, seed=seed + iteration
             )
-            eval_mean_rewards = np.nan if not eval_rewards else np.mean(eval_rewards)
-            eval_mean_steps = np.nan if not eval_steps else np.mean(eval_steps)
-            eval_rewards_hist.append(eval_mean_rewards)
-            eval_rewards_steps.append(global_step)
-            # TODO: Logging
-            # wandb.log(
-            #     {"eval/mean_rewards": eval_mean_rewards, "eval/mean_steps": eval_mean_steps},
-            #     step=global_step,
-            # )
+            mean_rewards = np.nan if not eval_rewards else np.mean(eval_rewards)
+            mean_steps = np.nan if not eval_steps else np.mean(eval_steps)
+            logger.log(
+                {"eval/mean_rewards": mean_rewards, "eval/mean_steps": mean_steps}, step=global_step
+            )
             last_eval = global_step
-
-        end_time = time.perf_counter()
-        print(f"Iter {iteration}/{n_iterations} took {end_time - start_time:.2f} seconds")
-        # TODO: Logging
-        # wandb.log(
-        #     {
-        #         "train/value_loss": v_loss.item(),
-        #         "train/policy_loss": pg_loss.item(),
-        #         "train/entropy_loss": entropy_loss.item(),
-        #         "train/old_approx_kl": old_approx_kl.item(),
-        #         "train/approx_kl": approx_kl.item(),
-        #         "train/clipfrac": np.mean(clipfracs),
-        #         "train/explained_var": explained_var,
-        #     },
-        #     step=global_step,
-        # )
+            logger.log({"time/eval": time.perf_counter() - tstart}, step=global_step)
+        buffer.clear()
     return agent

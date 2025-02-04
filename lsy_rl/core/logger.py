@@ -6,9 +6,6 @@ from typing import Mapping
 
 import numpy as np
 import torch
-from munch import Munch
-
-from lsy_rl.utils import load_config
 
 
 class Logger(ABC):

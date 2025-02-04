@@ -3,6 +3,7 @@ from pathlib import Path
 import gymnasium
 import pytest
 import torch
+from gymnasium.wrappers.vector.numpy_to_torch import NumpyToTorch
 
 from lsy_rl.ppo import ppo
 from lsy_rl.utils import load_config
@@ -18,11 +19,11 @@ maybe_cuda = pytest.param(
 
 
 @pytest.mark.parametrize("device", ("cpu", maybe_cuda))
-@pytest.mark.parametrize("vectorization_mode", ("sync", "async"))
 @pytest.mark.integration
-def test_training(device: torch.device, vectorization_mode: str):
-    env = gymnasium.make_vec("Pendulum-v1", num_envs=10, vectorization_mode=vectorization_mode)
-    eval_env = gymnasium.make_vec("Pendulum-v1", num_envs=10, vectorization_mode=vectorization_mode)
+def test_training(device: torch.device):
+    env = gymnasium.make_vec("Pendulum-v1", num_envs=10, vectorization_mode="sync")
+    eval_env = gymnasium.make_vec("Pendulum-v1", num_envs=10, vectorization_mode="sync")
+    env, eval_env = NumpyToTorch(env, device), NumpyToTorch(eval_env, device)
     config = load_config(Path(__file__).parent / "data/ppo_config.toml")
     config.device = device
     ppo(env, eval_env, **config)

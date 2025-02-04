@@ -213,12 +213,12 @@ def test_trajectory_indexing(device):
     for _ in range(3):
         buffer.add(sample)
     # Test indexing
-    assert torch.all(buffer["obs"][:, 0, ...] == sample["obs"])
-    assert torch.all(buffer["action"][:, 0, ...] == sample["action"])
-    assert torch.all(buffer["next_obs"][:, 0, ...] == sample["next_obs"])
-    assert torch.all(buffer["reward"][:, 0, ...] == sample["reward"])
-    assert torch.all(buffer["terminated"][:, 0, ...] == sample["terminated"])
-    assert torch.all(buffer["truncated"][:, 0, ...] == sample["truncated"])
+    assert torch.all(buffer["obs"][0, ...] == sample["obs"])
+    assert torch.all(buffer["action"][0, ...] == sample["action"])
+    assert torch.all(buffer["next_obs"][0, ...] == sample["next_obs"])
+    assert torch.all(buffer["reward"][0, ...] == sample["reward"])
+    assert torch.all(buffer["terminated"][0, ...] == sample["terminated"])
+    assert torch.all(buffer["truncated"][0, ...] == sample["truncated"])
 
 
 @pytest.mark.parametrize("device", ("cpu", maybe_cuda))

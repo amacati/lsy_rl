@@ -44,6 +44,9 @@ class PPOCritic(nn.Module):
             layer_init(nn.Linear(64, 1), std=1.0),
         )
 
+    def forward(self, obs: Tensor) -> Tensor:
+        return self.network(obs)
+
 
 class PPOPolicy(Policy, nn.Module):
     def __init__(self, actor: PPOActor, critic: PPOCritic, device: str = "cpu"):
