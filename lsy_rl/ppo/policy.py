@@ -49,11 +49,10 @@ class PPOCritic(nn.Module):
 
 
 class PPOPolicy(Policy, nn.Module):
-    def __init__(self, actor: PPOActor, critic: PPOCritic, device: str = "cpu"):
+    def __init__(self, actor: PPOActor, critic: PPOCritic):
         super().__init__()
-        self.device = torch.device(device)
-        self.actor = torch.compile(actor.to(self.device))
-        self.critic = torch.compile(critic.to(self.device))
+        self.actor = torch.compile(actor)
+        self.critic = torch.compile(critic)
 
     def action(self, obs: Tensor) -> Tensor:
         return self.actor.mean(obs)
@@ -71,9 +70,3 @@ class PPOPolicy(Policy, nn.Module):
 
     def value(self, obs: Tensor) -> Tensor:
         return self.critic(obs)
-
-    def to(self, device: str) -> PPOPolicy:
-        self.device = torch.device(device)
-        self.actor.to(self.device)
-        self.critic.to(self.device)
-        return self

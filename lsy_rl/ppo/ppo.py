@@ -101,7 +101,7 @@ def ppo(
 
     actor = PPOActor(train_envs.single_observation_space, train_envs.single_action_space)
     critic = PPOCritic(train_envs.single_observation_space)
-    agent = PPOPolicy(actor, critic, device)
+    agent = PPOPolicy(actor, critic).to(device)
     optimizer = AdamW(agent.parameters(), lr=learning_rate, eps=1e-5)
 
     # Create episode buffer
@@ -117,47 +117,48 @@ def ppo(
     obs, _ = train_envs.reset(seed=seed)
 
     for iteration in range(1, n_iterations + 1):
-        with torch.no_grad():
-            start_time = time.perf_counter()
-            steps = torch.zeros(n_envs, dtype=torch.int32, device=device)
-            while any(active := (steps < n_steps)):
+        start_time = time.perf_counter()
+        steps = torch.zeros(n_envs, dtype=torch.int32, device=device)
+        while any(active := (steps < n_steps)):
+            with torch.no_grad():
                 action, logprob, _, value = agent.action_and_value(obs)
-                next_obs, reward, terminated, truncated, info = train_envs.step(action)
-                done = terminated | truncated
-                ep_rewards += reward
-                ep_steps += 1
-                # Add sample to buffer
-                mask = active & ~autoreset
-                sample = TensorDict(
+            next_obs, reward, terminated, truncated, info = train_envs.step(action)
+            done = terminated | truncated
+            ep_rewards += reward
+            ep_steps += 1
+            # Add sample to buffer
+            mask = active & ~autoreset
+            sample = TensorDict(
+                {
+                    "obs": obs[mask],
+                    "action": action[mask],
+                    "next_obs": next_obs[mask],
+                    "reward": reward[mask],
+                    "terminated": terminated[mask].float(),
+                    "logprob": logprob[mask],
+                    "value": value[mask].squeeze(dim=-1),
+                },
+                batch_size=mask.sum().item(),
+            )
+            buffer.add(sample, mask)
+            steps[mask] += 1
+            global_step += mask.sum().item()
+
+            if done.any():
+                logger.log(
                     {
-                        "obs": obs[mask],
-                        "action": action[mask],
-                        "next_obs": next_obs[mask],
-                        "reward": reward[mask],
-                        "terminated": terminated[mask],
-                        "logprob": logprob[mask],
-                        "value": value[mask].squeeze(),
+                        "rollout/ep_reward": ep_rewards[done].mean().item(),
+                        "rollout/ep_step": ep_steps[done].float().mean().item(),
                     },
-                    batch_size=mask.sum().item(),
+                    step=global_step,
                 )
-                buffer.add(sample, mask)
-                steps[mask] += 1
-                global_step += mask.sum().item()
 
-                if done.any():
-                    logger.log(
-                        {
-                            "rollout/ep_reward": ep_rewards[done].mean().item(),
-                            "rollout/ep_step": ep_steps[done].float().mean().item(),
-                        },
-                        step=global_step,
-                    )
-
-                ep_rewards[autoreset] = 0
-                ep_steps[autoreset] = 0
-                autoreset = done
-            assert buffer.full(), "Buffer is not full"
-            logger.log({"time/rollout": time.perf_counter() - start_time}, step=global_step)
+            ep_rewards[autoreset] = 0
+            ep_steps[autoreset] = 0
+            autoreset = done
+            obs = next_obs
+        assert buffer.full(), "Buffer is not full"
+        logger.log({"time/rollout": time.perf_counter() - start_time}, step=global_step)
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -167,10 +168,10 @@ def ppo(
             for t in reversed(range(n_steps)):
                 if t == n_steps - 1:
                     # TODO: Check that terminated is correct instead of dones
-                    nextnonterminal = 1.0 - buffer["terminated"][t].float()
+                    nextnonterminal = 1.0 - buffer["terminated"][t]
                     nextvalues = next_value
                 else:
-                    nextnonterminal = 1.0 - buffer["terminated"][t + 1].float()
+                    nextnonterminal = 1.0 - buffer["terminated"][t + 1]
                     nextvalues = buffer["value"][t + 1]
                 future_reward = gamma * nextvalues * nextnonterminal
                 delta = buffer["reward"][t] + future_reward - buffer["value"][t]
