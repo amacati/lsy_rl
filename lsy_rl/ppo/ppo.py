@@ -45,21 +45,23 @@ def sync_envs(train_envs: VectorEnv, eval_envs: VectorEnv):
 def evaluate_agent(
     envs: VectorEnv, policy: PPOPolicy, n_steps: int, device: str, seed: int | None = None
 ) -> tuple[list[float], list[int]]:
-    eval_obs, _ = envs.reset(seed=seed)
+    obs, _ = envs.reset(seed=seed)
     ep_rewards = torch.zeros(envs.num_envs, device=device)
     ep_steps = torch.zeros_like(ep_rewards)
+    autoreset = torch.zeros(envs.num_envs, dtype=bool, device=device)
     rewards, steps = [], []  # All eval rewards are at the same global step, so we average
     for _ in range(n_steps):
         with torch.no_grad():
-            action, _, _, _ = policy.action_and_value(eval_obs, deterministic=True)
-        eval_obs, reward, terminated, truncated, _ = envs.step(action)
+            action, _, _, _ = policy.action_and_value(obs, deterministic=True)
+        obs, reward, terminated, truncated, _ = envs.step(action)
         ep_rewards += reward
         ep_steps += 1
         done = terminated | truncated
         rewards.extend([r.item() for r in ep_rewards[done]])
         steps.extend([s.item() for s in ep_steps[done]])
-        ep_rewards[done] = 0
-        ep_steps[done] = 0
+        ep_rewards[autoreset] = 0
+        ep_steps[autoreset] = 0
+        autoreset = done
     return rewards, steps
 
 
@@ -69,8 +71,9 @@ def ppo(
     n_steps: int,
     n_minibatches: int,
     n_total_steps: int,
-    learning_rate: float,
-    eval_interval: int,
+    actor_lr: float,
+    critic_lr: float,
+    eval_period: int,
     clip_coef: float = 0.2,
     ent_coef: float = 0.01,
     vf_coef: float = 0.5,
@@ -84,10 +87,13 @@ def ppo(
     n_eval_steps: int = 1000,
     device: torch.device = torch.device("cpu"),
     logger: Logger = EmptyLogger(),
+    agent: PPOPolicy | None = None,
     seed: int | None = None,
 ):
     set_seeds(seed)
     assert train_envs is not eval_envs, "Train and eval environments must be different"
+    if target_kl is not None and target_kl < 0:
+        target_kl = None
 
     # Calculate necessary parameters from the configured parameters
     n_envs = train_envs.num_envs
@@ -99,10 +105,15 @@ def ppo(
     if n_iterations < 1:
         return
 
-    actor = PPOActor(train_envs.single_observation_space, train_envs.single_action_space)
-    critic = PPOCritic(train_envs.single_observation_space)
-    agent = PPOPolicy(actor, critic).to(device)
-    optimizer = AdamW(agent.parameters(), lr=learning_rate, eps=1e-5)
+    if agent is None:
+        obs_shape = train_envs.single_observation_space.shape
+        action_shape = train_envs.single_action_space.shape
+        actor = PPOActor(obs_shape, action_shape)
+        critic = PPOCritic(obs_shape)
+        agent = PPOPolicy(actor, critic)
+    agent.to(device)
+    actor_optim = AdamW(agent.actor.parameters(), lr=actor_lr, eps=1e-5)
+    critic_optim = AdamW(agent.critic.parameters(), lr=critic_lr, eps=1e-5)
 
     # Create episode buffer
     buffer = TrajectoryBuffer(n_envs, n_steps, device)
@@ -180,9 +191,9 @@ def ppo(
             returns = advantages + buffer["value"]
 
         # flatten the batch
-        b_obs = buffer["obs"].reshape((-1,) + train_envs.single_observation_space.shape)
+        b_obs = buffer["obs"].flatten(end_dim=-2)
         b_logprobs = buffer["logprob"].reshape(-1)
-        b_actions = buffer["action"].reshape((-1,) + train_envs.single_action_space.shape)
+        b_actions = buffer["action"].flatten(end_dim=-2)
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = buffer["value"].reshape(-1)
@@ -196,7 +207,6 @@ def ppo(
             for start in range(0, batch_size, minibatch_size):
                 end = start + minibatch_size
                 mb_inds = b_inds[start:end]
-
                 _, newlogprob, entropy, newvalue = agent.action_and_value(
                     b_obs[mb_inds], b_actions[mb_inds]
                 )
@@ -235,10 +245,12 @@ def ppo(
                 entropy_loss = entropy.mean()
                 loss = pg_loss - ent_coef * entropy_loss + v_loss * vf_coef
 
-                optimizer.zero_grad()
+                actor_optim.zero_grad()
+                critic_optim.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), max_grad_norm)
-                optimizer.step()
+                actor_optim.step()
+                critic_optim.step()
 
             if target_kl is not None and approx_kl > target_kl:
                 break
@@ -261,11 +273,12 @@ def ppo(
         )
 
         # Evaluate the agent
-        if global_step - last_eval >= eval_interval:
+        if global_step - last_eval >= eval_period:
             tstart = time.perf_counter()
             sync_envs(train_envs, eval_envs)
+            eval_seed = seed if seed is None else seed + iteration
             eval_rewards, eval_steps = evaluate_agent(
-                eval_envs, agent, n_steps=n_eval_steps, device=device, seed=seed + iteration
+                eval_envs, agent, n_steps=n_eval_steps, device=device, seed=eval_seed
             )
             mean_rewards = np.nan if not eval_rewards else np.mean(eval_rewards)
             mean_steps = np.nan if not eval_steps else np.mean(eval_steps)
@@ -275,4 +288,5 @@ def ppo(
             last_eval = global_step
             logger.log({"time/eval": time.perf_counter() - tstart}, step=global_step)
         buffer.clear()
+    logger.flush()
     return agent

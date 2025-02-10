@@ -1,5 +1,6 @@
 n_steps = 8
 n_minibatches = 8
 n_total_steps = 128
-learning_rate = 0.001
-eval_interval = 128
+actor_lr = 0.001
+critic_lr = 0.001
+eval_period = 128
