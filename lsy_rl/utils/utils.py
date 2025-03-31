@@ -1,6 +1,7 @@
 import datetime
 import inspect
 import logging
+import random
 import sys
 import tomllib
 from pathlib import Path
@@ -9,6 +10,8 @@ from typing import Any, Callable, TypeVar
 import numpy as np
 import torch
 import torch.nn as nn
+from gymnasium.vector import VectorEnv
+from gymnasium.wrappers.vector import NormalizeObservation
 from munch import Munch, munchify  # TODO: Replace with ConfigDict
 from tensordict import TensorDict
 from torch import Tensor
@@ -182,6 +185,20 @@ def required_args(cls: type) -> list[str]:
     return [p.name for p in inspect.signature(cls).parameters.values() if p.default == p.empty]
 
 
+def set_seeds(seed: int | None = None):
+    """Set the seeds for random, numpy, and torch.
+
+    Args:
+        seed: The seed value.
+    """
+    if seed is None:
+        return
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+
+
 def tensordict_sample(
     obs: Tensor,
     action: Tensor,
@@ -222,3 +239,23 @@ def tensordict_sample(
         batch_size=obs.shape[0],
         device=device,
     )
+
+
+def unwrap_norm_env(env: VectorEnv) -> NormalizeObservation | None:
+    """Return the normalization wrapper if it exists, otherwise return None."""
+    while hasattr(env, "env"):
+        if isinstance(env, NormalizeObservation):
+            return env
+        env = env.env
+
+
+def sync_env_normalization(train_envs: VectorEnv, eval_envs: VectorEnv):
+    """Sync the normalization constants from the train env to the eval env."""
+    train_norm_env = unwrap_norm_env(train_envs)
+    eval_norm_env = unwrap_norm_env(eval_envs)
+    if (train_norm_env is None) != (eval_norm_env is None):
+        raise ValueError("Both envs must either have normalization or not have normalization")
+    if train_norm_env is None and eval_norm_env is None:  # No normalization, no sync necessary
+        return
+    eval_norm_env.obs_rms.mean = train_norm_env.obs_rms.mean
+    eval_norm_env.obs_rms.var = train_norm_env.obs_rms.var

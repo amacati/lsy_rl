@@ -1,45 +1,16 @@
-import random
 import time
 
 import numpy as np
 import torch
 import torch.nn as nn
 from gymnasium.vector import VectorEnv
-from gymnasium.wrappers.vector import NormalizeObservation
 from tensordict import TensorDict
 from torch.optim import AdamW
 
 from lsy_rl.core.logger import EmptyLogger, Logger
 from lsy_rl.core.replay_buffer import TrajectoryBuffer
 from lsy_rl.ppo.policy import PPOActor, PPOCritic, PPOPolicy
-
-
-def set_seeds(seed: int | None = None):
-    if seed is None:
-        return
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-
-
-def unwrap_norm_env(env: VectorEnv) -> NormalizeObservation | None:
-    while hasattr(env, "env"):
-        if isinstance(env, NormalizeObservation):
-            return env
-        env = env.env
-
-
-def sync_envs(train_envs: VectorEnv, eval_envs: VectorEnv):
-    """Sync the normalization constants from the train env to the eval env."""
-    train_norm_env = unwrap_norm_env(train_envs)
-    eval_norm_env = unwrap_norm_env(eval_envs)
-    if (train_norm_env is None) != (eval_norm_env is None):
-        raise ValueError("Both envs must either have normalization or not have normalization")
-    if train_norm_env is None and eval_norm_env is None:  # No normalization, no sync necessary
-        return
-    eval_norm_env.obs_rms.mean = train_norm_env.obs_rms.mean
-    eval_norm_env.obs_rms.var = train_norm_env.obs_rms.var
+from lsy_rl.utils.utils import set_seeds, sync_env_normalization
 
 
 def evaluate_agent(
@@ -275,7 +246,7 @@ def ppo(
         # Evaluate the agent
         if global_step - last_eval >= eval_period:
             tstart = time.perf_counter()
-            sync_envs(train_envs, eval_envs)
+            sync_env_normalization(train_envs, eval_envs)
             eval_seed = seed if seed is None else seed + iteration
             eval_rewards, eval_steps = evaluate_agent(
                 eval_envs, agent, n_steps=n_eval_steps, device=device, seed=eval_seed

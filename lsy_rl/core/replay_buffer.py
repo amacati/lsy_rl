@@ -286,7 +286,7 @@ class VectorReplayBuffer(ReplayBuffer):
         If the buffer is full, overwrite the oldest samples.
         """
         # If no explicit environment index given, assume one sample per env
-        v_idx = v_idx or self._default_v_idx
+        v_idx = self._default_v_idx if v_idx is None else v_idx
         assert sample.batch_size[0] == v_idx.shape[0], "Sample size must match the env index"
         # Check if there are unknown keys in the sample and allocate buffers for them if necessary
         self._allocate_buffers(sample)  # TODO: Replace with module _allocate_buffers
@@ -299,9 +299,8 @@ class VectorReplayBuffer(ReplayBuffer):
         self.buffer[v_idx, idx] = sample
         # Update the helper indices
         self._idx[v_idx] = (self._idx[v_idx] + num_samples[v_idx]) % self.bufflen
-        self._maxidx[v_idx] = torch.min(
-            self._maxidx[v_idx] + num_samples[v_idx],
-            torch.ones_like(self._maxidx) * (self.bufflen - 1),
+        self._maxidx[v_idx] = torch.clip(
+            self._maxidx[v_idx] + num_samples[v_idx], max=self.bufflen - 1
         )
 
     def _allocate_buffers(self, sample: TensorDict):
