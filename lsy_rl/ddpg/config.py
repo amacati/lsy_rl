@@ -12,13 +12,11 @@ from lsy_rl.ddpg.policy import DDPGActor, DDPGCritic
 from lsy_rl.utils.utils import check_kwargs, to_cls
 
 if TYPE_CHECKING:
-    import gymnasium
     import numpy as np
 
 
 @dataclass
 class DDPGConfig:
-    env: EnvConfig
     rollout: RolloutConfig
     train: TrainConfig
     eval: EvalConfig
@@ -41,15 +39,6 @@ class DDPGConfig:
         self.rollout.obs_transform = self.rollout.obs_transform.to(dev)
         self.eval.action_transform = self.eval.action_transform.to(dev)
         self.eval.obs_transform = self.eval.obs_transform.to(dev)
-
-
-@dataclass
-class EnvConfig:
-    name: str
-    seed: int | None = None
-    n_envs: int = 1
-    kwargs: dict[str, Any] = field(default_factory=dict)
-    env: gymnasium.Env | None = None
 
 
 @dataclass

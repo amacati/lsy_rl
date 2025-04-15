@@ -7,14 +7,7 @@ from gymnasium.vector import VectorEnv
 
 from lsy_rl.core.logger import EmptyLogger, Logger
 from lsy_rl.ddpg.ddpg import DDPG
-from lsy_rl.td3.config import (
-    CheckpointConfig,
-    EnvConfig,
-    EvalConfig,
-    RolloutConfig,
-    TD3Config,
-    TrainConfig,
-)
+from lsy_rl.td3.config import CheckpointConfig, EvalConfig, RolloutConfig, TD3Config, TrainConfig
 from lsy_rl.td3.policy import TD3Policy
 from lsy_rl.utils.utils import unique_folder
 
@@ -150,8 +143,6 @@ class TD3(DDPG):
         self.train_info.n_samples = self.rollout_info.n_samples
 
     def _parse_config(self, config: SimpleNamespace, env: gymnasium.vector.VectorEnv) -> TD3Config:
-        env_config = EnvConfig(**config.env)
-        env_config.env = env
         rollout_config = RolloutConfig(**config.rollout)
         train_config = TrainConfig(**config.train)
         eval_config = EvalConfig(**config.eval)
@@ -159,12 +150,12 @@ class TD3(DDPG):
 
         # Check if the config is valid
         for cfg in (train_config, eval_config, checkpoint_config):
-            if cfg.period is not None and cfg.period % env_config.n_envs != 0:
+            if cfg.period is not None and cfg.period % env.num_envs != 0:
                 raise ValueError(
                     f"Config {cfg} period ({cfg.period}) must be multiple of "
-                    f"'n_envs' ({env_config.n_envs})."
+                    f"'num_envs' ({env.num_envs})."
                 )
-        return TD3Config(env_config, rollout_config, train_config, eval_config, checkpoint_config)
+        return TD3Config(rollout_config, train_config, eval_config, checkpoint_config)
 
     def _init_policy(self) -> TD3Policy:
         spaces = {"obs_space": self.env.observation_space, "action_space": self.env.action_space}

@@ -14,7 +14,6 @@ from lsy_rl.core.transforms import (
     to_transforms,
 )
 from lsy_rl.ddpg.config import CheckpointConfig as DDPGCheckpointConfig
-from lsy_rl.ddpg.config import EnvConfig as DDPGEnvConfig
 from lsy_rl.ddpg.config import EvalConfig as DDPGEvalConfig
 from lsy_rl.ddpg.config import RolloutConfig as DDPGRolloutConfig
 from lsy_rl.td3.policy import TD3Actor, TD3Critic
@@ -23,7 +22,6 @@ from lsy_rl.utils.utils import check_kwargs, to_cls
 
 @dataclass
 class TD3Config:
-    env: EnvConfig
     rollout: RolloutConfig
     train: TrainConfig
     eval: EvalConfig
@@ -47,10 +45,6 @@ class TD3Config:
         self.eval.action_transform = self.eval.action_transform.to(dev)
         self.eval.obs_transform = self.eval.obs_transform.to(dev)
         self.rollout.finalize(self.env.env)
-
-
-@dataclass
-class EnvConfig(DDPGEnvConfig): ...
 
 
 @dataclass

@@ -11,14 +11,7 @@ from munch import Munch
 
 from lsy_rl.core import Algorithm
 from lsy_rl.core.logger import EmptyLogger, Logger
-from lsy_rl.ddpg.config import (
-    CheckpointConfig,
-    DDPGConfig,
-    EnvConfig,
-    EvalConfig,
-    RolloutConfig,
-    TrainConfig,
-)
+from lsy_rl.ddpg.config import CheckpointConfig, DDPGConfig, EvalConfig, RolloutConfig, TrainConfig
 from lsy_rl.ddpg.policy import DDPGPolicy
 from lsy_rl.utils.utils import tensordict_sample, unique_folder
 
@@ -432,8 +425,6 @@ class DDPG(Algorithm):
                 self.eval_env.reset(seed=seed + 1)
 
     def _parse_config(self, config: SimpleNamespace, env: gymnasium.vector.VectorEnv) -> DDPGConfig:
-        env_config = EnvConfig(**config.env)
-        env_config.env = env
         rollout_config = RolloutConfig(**config.rollout)
         train_config = TrainConfig(**config.train)
         eval_config = EvalConfig(**config.eval)
@@ -441,12 +432,11 @@ class DDPG(Algorithm):
 
         # Check if the config is valid
         for cfg in (train_config, eval_config, checkpoint_config):
-            if cfg.period is not None and cfg.period % env_config.n_envs != 0:
+            if cfg.period is not None and cfg.period % env.num_envs != 0:
                 raise ValueError(
-                    f"Config {cfg} period ({cfg.period}) must be multiple of "
-                    f"'n_envs' ({env_config.n_envs})."
+                    f"Config period ({cfg.period}) must be multiple of 'num_envs' ({env.num_envs})."
                 )
-        return DDPGConfig(env_config, rollout_config, train_config, eval_config, checkpoint_config)
+        return DDPGConfig(rollout_config, train_config, eval_config, checkpoint_config)
 
     def _init_policy(self) -> DDPGPolicy:
         spaces = {"obs_space": self.env.observation_space, "action_space": self.env.action_space}

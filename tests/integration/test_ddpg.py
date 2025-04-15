@@ -24,7 +24,7 @@ maybe_cuda = pytest.param(
 @pytest.mark.integration
 def test_init(device: torch.device, vectorization_mode: str):
     env = NumpyToTorch(
-        gymnasium.make_vec("Pendulum-v1", num_envs=10, vectorization_mode=vectorization_mode),
+        gymnasium.make_vec("Pendulum-v1", num_envs=2, vectorization_mode=vectorization_mode),
         device=device,
     )
     config = load_config(Path(__file__).parent / "data/ddpg_config.toml")
@@ -38,11 +38,11 @@ def test_init(device: torch.device, vectorization_mode: str):
 @pytest.mark.integration
 def test_training(device: torch.device, vectorization_mode: str):
     env = NumpyToTorch(
-        gymnasium.make_vec("Pendulum-v1", num_envs=10, vectorization_mode=vectorization_mode),
+        gymnasium.make_vec("Pendulum-v1", num_envs=2, vectorization_mode=vectorization_mode),
         device=device,
     )
     eval_env = NumpyToTorch(
-        gymnasium.make_vec("Pendulum-v1", num_envs=10, vectorization_mode=vectorization_mode),
+        gymnasium.make_vec("Pendulum-v1", num_envs=2, vectorization_mode=vectorization_mode),
         device=device,
     )
     config = load_config(Path(__file__).parent / "data/ddpg_config.toml")

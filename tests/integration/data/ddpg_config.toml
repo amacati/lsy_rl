@@ -5,11 +5,12 @@ name = "Pendulum-v0"
 max_samples = 10
 
 [train]
+period = 2
 steps = 2
 batch_size = 2
 
 [eval]
-period = 5
+period = 4
 steps = 100
 
 [checkpoint]
