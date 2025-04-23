@@ -171,9 +171,9 @@ class ClipTF(Transform):
             max: The maximum value or list of maximum values for each dimension.
         """
         super().__init__(shared=shared)
-        assert isinstance(min, (Number, list)) and isinstance(
-            max, (Number, list)
-        ), "min and max must be floats or lists of floats"
+        assert isinstance(min, (Number, list)) and isinstance(max, (Number, list)), (
+            "min and max must be floats or lists of floats"
+        )
         min, max = torch.tensor(min, dtype=torch.float32), torch.tensor(max, dtype=torch.float32)
         self.params["min"] = nn.Parameter(min, requires_grad=False)
         self.params["max"] = nn.Parameter(max, requires_grad=False)

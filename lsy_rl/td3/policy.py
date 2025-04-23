@@ -68,6 +68,6 @@ class TD3Policy(Policy):
         torch.save(save_dict, path)
 
     def load(self, path: Path):
-        save_dict = torch.load(path)
+        save_dict = torch.load(path, weights_only=True)
         self.actor.load_state_dict(save_dict["actor"])
         self.critic.load_state_dict(save_dict["critic"])
