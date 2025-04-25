@@ -1,16 +1,26 @@
-[env]
-name = "Pendulum-v0"
+eval_period = 5
+n_steps = 8
+actor_lr = 0.001
+critic_lr = 0.001
+buffer_size = 1_000_000
+eps = 1e-8
+train_period = 1
+train_steps = 1
+critic_period = 1
+actor_period = 1
+actor_target_period = 2
+critic_target_period = 2
+tau = 0.005
+gamma = 0.99
+grad_clip = 1.0
+batch_size = 128
+eval_steps = 1000
+device = "cpu"
 
-[rollout]
-max_samples = 10
-
-[train]
-steps = 2
-batch_size = 2
-
-[eval]
-period = 5
-steps = 100
-
-[checkpoint]
-period = false
+[target_action_tf]
+type = "AdditiveNoiseTF"
+[target_action_tf.kwargs.noise]
+type = "NormalNoise"
+[target_action_tf.kwargs.noise.kwargs]
+mean = 0.0
+std = 0.1

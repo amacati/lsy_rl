@@ -3,9 +3,11 @@ from pathlib import Path
 import gymnasium
 import pytest
 import torch
+from gymnasium.wrappers.vector.numpy_to_torch import NumpyToTorch
 
-from lsy_rl.core import Algorithm
-from lsy_rl.td3 import TD3
+from lsy_rl.core.transforms import to_transforms
+from lsy_rl.td3 import td3
+from lsy_rl.td3.policy import TD3Policy
 from lsy_rl.utils import load_config
 
 
@@ -20,27 +22,29 @@ maybe_cuda = pytest.param(
 
 @pytest.mark.parametrize("device", ("cpu", maybe_cuda))
 @pytest.mark.parametrize("vectorization_mode", ("sync", "async"))
-@pytest.mark.integration
-def test_init(device: torch.device, vectorization_mode: str):
-    pytest.skip("TD3 not adapted to Gymnasium 1.0")
-    env = gymnasium.make_vec("Pendulum-v1", num_envs=10, vectorization_mode=vectorization_mode)
-    config = load_config(Path(__file__).parent / "data/td3_config.toml")
-    config.train.device = device
-    td3 = TD3(env, env, config)
-    assert isinstance(td3, Algorithm)
-
-
-@pytest.mark.parametrize("device", ("cpu", maybe_cuda))
-@pytest.mark.parametrize("vectorization_mode", ("sync", "async"))
 @pytest.mark.parametrize("batch_size", (1, 3))
 @pytest.mark.integration
 def test_training(device: torch.device, vectorization_mode: str, batch_size: int):
-    pytest.skip("TD3 not adapted to Gymnasium 1.0")
-    env = gymnasium.make_vec("Pendulum-v1", num_envs=10, vectorization_mode=vectorization_mode)
-    eval_env = gymnasium.make_vec("Pendulum-v1", num_envs=10, vectorization_mode=vectorization_mode)
+    vector_kwargs = {}
+    if vectorization_mode == "async":
+        vector_kwargs = {"context": "spawn"}
+
+    env = gymnasium.make_vec(
+        "Pendulum-v1",
+        num_envs=10,
+        vectorization_mode=vectorization_mode,
+        vector_kwargs=vector_kwargs,
+    )
+    eval_env = gymnasium.make_vec(
+        "Pendulum-v1",
+        num_envs=10,
+        vectorization_mode=vectorization_mode,
+        vector_kwargs=vector_kwargs,
+    )
+    env, eval_env = NumpyToTorch(env, device=device), NumpyToTorch(eval_env, device=device)
     config = load_config(Path(__file__).parent / "data/td3_config.toml")
-    config.train.batch_size = batch_size
-    config.train.device = device
-    td3 = TD3(env, eval_env, config)
-    td3.train()
-    assert isinstance(td3, Algorithm)
+    config.target_action_tf = to_transforms([config.target_action_tf])
+    config.batch_size = batch_size
+    config.device = device
+    policy = td3(env, eval_env, **config)
+    assert isinstance(policy, TD3Policy)

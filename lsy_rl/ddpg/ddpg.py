@@ -439,7 +439,10 @@ class DDPG(Algorithm):
         return DDPGConfig(rollout_config, train_config, eval_config, checkpoint_config)
 
     def _init_policy(self) -> DDPGPolicy:
-        spaces = {"obs_space": self.env.observation_space, "action_space": self.env.action_space}
+        spaces = {
+            "obs_space": self.env.single_observation_space,
+            "action_space": self.env.single_action_space,
+        }
         self.cfg.train.actor_kwargs |= spaces
         actor = self.cfg.train.actor_cls(**self.cfg.train.actor_kwargs)
         self.cfg.train.policy_kwargs["actor"] = actor

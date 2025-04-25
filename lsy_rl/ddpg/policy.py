@@ -16,7 +16,10 @@ class DDPGActor(nn.Module):
         super().__init__()
         assert isinstance(obs_space, Box), f"Invalid obs space type {type(obs_space)}"
         assert isinstance(action_space, Box), f"Invalid action space type {type(action_space)}"
-        obs_dim, action_dim = obs_space.shape[1], action_space.shape[1]  # Remove num_envs dimension
+        obs_ndim, action_ndim = len(obs_space.shape), len(action_space.shape)
+        assert obs_ndim == 1, f"Invalid obs space dimension {obs_ndim}"
+        assert action_ndim == 1, f"Invalid action space dimension {action_ndim}"
+        obs_dim, action_dim = obs_space.shape[0], action_space.shape[0]
         self.network = DDPGActorNetwork(obs_dim, action_dim)
         # Initialize the target network and synchronize the weights
         self.target_network = DDPGActorNetwork(obs_dim, action_dim)
@@ -61,7 +64,10 @@ class DDPGCritic(nn.Module):
         super().__init__()
         assert isinstance(obs_space, Box), f"Invalid obs space type {type(obs_space)}"
         assert isinstance(action_space, Box), f"Invalid action space type {type(action_space)}"
-        obs_dim, action_dim = obs_space.shape[1], action_space.shape[1]  # Remove num_envs dimension
+        obs_ndim, action_ndim = len(obs_space.shape), len(action_space.shape)
+        assert obs_ndim == 1, f"Invalid obs space dimension {obs_ndim}"
+        assert action_ndim == 1, f"Invalid action space dimension {action_ndim}"
+        obs_dim, action_dim = obs_space.shape[0], action_space.shape[0]
         self.network = DDPGCriticNetwork(obs_dim + action_dim)
         # Initialize the target network and synchronize the weights
         self.target_network = DDPGCriticNetwork(obs_dim + action_dim)

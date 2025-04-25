@@ -1,9 +1,10 @@
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 
 from torch import Tensor
+from torch.nn import Module
 
 
-class Policy(ABC):
+class Policy(Module):
     def __init__(self):
         super().__init__()
 

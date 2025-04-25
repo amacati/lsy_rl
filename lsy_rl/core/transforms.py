@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 import torch
 import torch.nn as nn
+from ml_collections import ConfigDict
 from tensordict import TensorDict
 from torch import Tensor
 
@@ -38,7 +39,7 @@ def to_transforms(transforms: list[Transform | dict] | Transform) -> ChainedTF:
         if isinstance(tf, Transform):
             transform.append(tf)
             continue
-        assert isinstance(tf, dict)
+        assert isinstance(tf, Mapping | ConfigDict), f"Unsupported transform type {type(tf)}"
         tf_cls = to_cls(tf["type"], factory=transform_cls, expected_type=Transform)
         transform.append(tf_cls(**(tf.get("kwargs") or {})))
     return transform
@@ -187,7 +188,7 @@ class ClipTF(Transform):
 class AdditiveNoiseTF(Transform):
     """Add noise to the input Tensor."""
 
-    def __init__(self, noise: Noise | dict, shared: bool = False):
+    def __init__(self, noise: Noise | dict | ConfigDict, shared: bool = False):
         """Initialize the noise.
 
         Args:
@@ -195,7 +196,7 @@ class AdditiveNoiseTF(Transform):
                 is created with noise_cls(noise["type"])(**noise["kwargs"]).
         """
         super().__init__(shared=shared)
-        if isinstance(noise, dict):
+        if isinstance(noise, dict | ConfigDict):
             noise = noise_cls(noise["type"])(**(noise.get("kwargs") or {}))
         assert isinstance(noise, Noise), "noise must be a Noise object"
         self.params["noise"] = noise

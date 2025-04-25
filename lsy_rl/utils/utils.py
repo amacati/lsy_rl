@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 from gymnasium.vector import VectorEnv
 from gymnasium.wrappers.vector import NormalizeObservation
-from munch import Munch, munchify  # TODO: Replace with ConfigDict
+from ml_collections import ConfigDict
 from tensordict import TensorDict
 from torch import Tensor
 
@@ -95,18 +95,18 @@ def torchify_dtype(dtype: np.dtype) -> torch.dtype:
             raise ValueError(f"Unsupported dtype {dtype}")
 
 
-def load_config(path: Path) -> Munch:
-    """Load a toml configuration file and convert it to a Munch object.
+def load_config(path: Path) -> ConfigDict:
+    """Load a toml configuration file and convert it to a ConfigDict object.
 
     Args:
         path: The path to the configuration file.
 
     Returns:
-        The configuration as a Munch object providing key access via dot/member syntax.
+        The configuration as a ConfigDict object providing key access via dot/member syntax.
     """
     with open(path, "rb") as f:
         config = tomllib.load(f)
-    return munchify(config)
+    return ConfigDict(config, type_safe=False)
 
 
 def unique_folder(dir: Path | None) -> Path | None:

@@ -1,10 +1,7 @@
-import logging
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Generator
 
-import gymnasium
 import numpy as np
 import torch
 from gymnasium.vector import VectorEnv
@@ -13,18 +10,14 @@ from torch.optim import AdamW
 from lsy_rl.core.logger import EmptyLogger, Logger
 from lsy_rl.core.replay_buffer import VectorReplayBuffer
 from lsy_rl.core.transforms import IdentityTF, Transform
-from lsy_rl.ddpg.ddpg import DDPG
-from lsy_rl.td3.config import CheckpointConfig, EvalConfig, RolloutConfig, TD3Config, TrainConfig
 from lsy_rl.td3.policy import TD3Actor, TD3Critic, TD3Policy
-from lsy_rl.utils.utils import set_seeds, tensordict_sample, unique_folder
-
-logger = logging.getLogger(__name__)
+from lsy_rl.utils.utils import set_seeds, tensordict_sample
 
 
 def td3(
     train_envs: VectorEnv,
     eval_envs: VectorEnv,
-    max_samples: int,
+    n_steps: int,
     actor_lr: float,
     critic_lr: float,
     replay_buffer: VectorReplayBuffer | None = None,
@@ -53,70 +46,85 @@ def td3(
     target_action_tf: Transform = IdentityTF(),
     logger: Logger = EmptyLogger(),
     device: torch.device = torch.device("cpu"),
+    env_device: torch.device = torch.device("cpu"),
     checkpoint_path: Path | None = None,
     checkpoint_buffer: bool = False,
     seed: int | None = None,
-):
+) -> TD3Policy:
     set_seeds(seed)
     assert train_envs is not eval_envs, "Train and eval environments must be different"
 
+    # Calculate log periods to limit the amount of logging
+    N_LOGS = 100
+    collect_samples_log_period = n_steps // N_LOGS
+    train_log_period = n_steps // N_LOGS
+    eval_log_period = n_steps // N_LOGS
+    checkpoint_log_period = n_steps // N_LOGS
+
     if policy is None:
-        obs_space = train_envs.single_observation_space.shape
-        action_space = train_envs.single_action_space.shape
+        obs_space = train_envs.single_observation_space
+        action_space = train_envs.single_action_space
         actor = TD3Actor(obs_space, action_space)
         critic = TD3Critic(obs_space, action_space)
-        agent = TD3Policy(actor, critic, device=device)
-    agent.to(device)
-    critic_optimizer = AdamW(agent.critic.parameters(), lr=critic_lr, eps=eps)
-    actor_optimizer = AdamW(agent.actor.parameters(), lr=actor_lr, eps=eps)
+        policy = TD3Policy(actor, critic, device=device)
+    policy.to(device)
+    critic_optimizer = AdamW(policy.critic.parameters(), lr=critic_lr, eps=eps)
+    actor_optimizer = AdamW(policy.actor.parameters(), lr=actor_lr, eps=eps)
 
     if replay_buffer is None:
         replay_buffer = VectorReplayBuffer(
             train_envs.num_envs, max_size=buffer_size, device=device, seed=seed
         )
 
-    train_log = {}
+    train_info = {}
     n_train_steps = 0
     n_samples = 0
-    evaluate_policy(policy, eval_envs, eval_steps, obs_tf, action_tf, n_samples)
+    evaluate_policy(policy, eval_envs, eval_steps, obs_tf, action_tf, n_samples, env_device, logger)
     for n_samples, should_train, should_eval, should_checkpoint in collect_samples(
-        policy,
-        train_envs,
-        max_samples,
-        obs_tf,
-        action_tf,
-        replay_buffer,
-        train_period,
-        eval_period,
-        checkpoint_period,
-        train_min_samples,
+        policy=policy,
+        env=train_envs,
+        n_steps=n_steps,
+        obs_tf=obs_tf,
+        action_tf=action_tf,
+        replay_buffer=replay_buffer,
+        train_period=train_period,
+        eval_period=eval_period,
+        checkpoint_period=checkpoint_period,
+        log_period=collect_samples_log_period,
+        train_min_samples=train_min_samples,
+        env_device=env_device,
+        logger=logger,
     ):
         if should_train:
-            train_log = train_policy(
-                policy,
-                replay_buffer,
-                train_steps,
-                n_train_steps,
-                n_samples,
-                critic_period,
-                actor_period,
-                actor_target_period,
-                critic_target_period,
-                tau,
-                gamma,
-                grad_clip,
-                batch_size,
-                obs_tf,
-                train_action_tf,
-                target_action_tf,
-                critic_optimizer,
-                actor_optimizer,
-                train_log,
-                reward_clip,
+            train_info = train_policy(
+                policy=policy,
+                replay_buffer=replay_buffer,
+                steps=train_steps,
+                n_train_steps=n_train_steps,
+                n_samples=n_samples,
+                critic_period=critic_period,
+                actor_period=actor_period,
+                actor_target_period=actor_target_period,
+                critic_target_period=critic_target_period,
+                tau=tau,
+                gamma=gamma,
+                grad_clip=grad_clip,
+                batch_size=batch_size,
+                obs_tf=obs_tf,
+                action_tf=train_action_tf,
+                target_action_tf=target_action_tf,
+                critic_optimizer=critic_optimizer,
+                actor_optimizer=actor_optimizer,
+                info=train_info,
+                reward_clip=reward_clip,
+                log_period=train_log_period,
+                logger=logger,
             )
             n_train_steps += train_steps
         if should_eval:
-            evaluate_policy(policy, eval_envs, eval_steps, obs_tf, eval_action_tf, n_samples)
+            evaluate_policy(
+                policy, eval_envs, eval_steps, obs_tf, eval_action_tf, n_samples, env_device, logger
+            )
         if should_checkpoint and checkpoint_path is not None:
             checkpoint(
                 checkpoint_path,
@@ -146,16 +154,18 @@ def td3(
 def collect_samples(
     policy: TD3Policy,
     env: VectorEnv,
-    max_samples: int,
+    n_steps: int,
     obs_tf: Transform,
     action_tf: Transform,
-    buffer: VectorReplayBuffer,
+    replay_buffer: VectorReplayBuffer,
     train_period: int,
     eval_period: int | None,
     checkpoint_period: int | None,
     log_period: int,
     train_min_samples: int | None,
-) -> Generator[int, bool, bool, bool]:
+    env_device: torch.device,
+    logger: Logger,
+) -> Generator[tuple[int, bool, bool, bool], None, None]:
     """Collect samples from the environment and store them in the replay buffer.
 
     This function is a generator. It will continue to save samples into the buffer until the maximum
@@ -163,7 +173,6 @@ def collect_samples(
     training, evaluating or checkpointing are met.
     """
     device = policy.device
-    env_device = env.device
     last_train = 0
     last_eval = 0
     last_log = 0
@@ -177,7 +186,7 @@ def collect_samples(
 
     obs = None
 
-    while n_samples < max_samples:
+    while n_samples < n_steps:
         policy.eval()
 
         if obs is None:  # If first rollout, reset the environment
@@ -205,7 +214,7 @@ def collect_samples(
 
         # TODO: Add support for variable rollout length
         assert torch.all(done) or not torch.any(done), "Variable rollout length not supported"
-        buffer.add(sample)
+        replay_buffer.add(sample)
         autoreset = torch.all(done)
 
         n_samples += env.num_envs
@@ -252,7 +261,7 @@ def collect_samples(
 
 def train_policy(
     policy: TD3Policy,
-    buffer: VectorReplayBuffer,
+    replay_buffer: VectorReplayBuffer,
     steps: int,
     n_train_steps: int,
     n_samples: int,
@@ -271,7 +280,8 @@ def train_policy(
     actor_optimizer: torch.optim.Optimizer,
     info: dict,
     log_period: int,
-    reward_clip: tuple[float, float] | None = None,
+    reward_clip: tuple[float, float] | None,
+    logger: Logger,
 ):
     """Train the policy using the collected samples in the replay buffer."""
     policy.train()  # Critic is always in train mode, not used for inference
@@ -291,7 +301,7 @@ def train_policy(
         n_train_steps += 1
 
         if n_train_steps % critic_period == 0:
-            batch = buffer.sample(batch_size)
+            batch = replay_buffer.sample(batch_size)
             # Compute the expected Q values with the reward and the target networks
             with torch.no_grad():
                 next_obs_t = obs_tf(batch["next_obs"])
@@ -323,7 +333,7 @@ def train_policy(
             info["critic_steps_since_log"] += 1
 
         if n_train_steps % actor_period == 0:
-            batch = buffer.sample(batch_size)
+            batch = replay_buffer.sample(batch_size)
             # Compute the actions for the sample observations, compute the critic value of the
             # observations and actions and compute the actor loss by maximizing the critic value
             obs_t = obs_tf(batch["obs"])
@@ -367,15 +377,16 @@ def train_policy(
 def evaluate_policy(
     policy: TD3Policy,
     env: VectorEnv,
-    n_steps: int,
+    n_eval_steps: int,
     obs_tf: Transform,
     action_tf: Transform,
     n_samples: int,
+    env_device: torch.device,
+    logger: Logger,
 ) -> dict[str, float]:
     """Evaluate the policy on the evaluation environment and log the results."""
     policy.eval()
     device = policy.device
-    env_device = env.device
     rewards = torch.zeros(env.num_envs, device=device)
     steps = torch.zeros(env.num_envs, device=device)
     all_rewards, ep_rewards, ep_steps, ep_last_rewards = [], [], [], []
@@ -384,7 +395,7 @@ def evaluate_policy(
     obs = obs.to(device)
     autoreset = False
     n = 0
-    while n < n_steps:
+    while n < n_eval_steps:
         obs_t = obs_tf(obs)
         action = policy.action(obs_t)
         action = action_tf(action).to(env_device)
@@ -448,157 +459,3 @@ def checkpoint(
     torch.save(actor_optimizer.state_dict(), path / "actor_opt.pt")
     torch.save(critic_optimizer.state_dict(), path / "critic_opt.pt")
     torch.save(obs_tf.state_dict(), path / "obs_transform.pt")
-
-
-class TD3(DDPG):
-    def __init__(
-        self,
-        env: VectorEnv,
-        eval_env: VectorEnv,
-        config: SimpleNamespace,
-        logger: Logger = EmptyLogger(),
-        seed: int | None = None,
-    ):
-        """Initialize the TD3 algorithm.
-
-        Args:
-            env: Training environment.
-            eval_env: Evaluation environment.
-            config: Configuration of the algorithm. See `TD3Config` for details.
-            logger: Logger for keeping track of results. Defaults to an empty logger.
-            seed: Random seed used for reproducibility. Defaults to None, i.e. no seed.
-        """
-        assert hasattr(env, "num_envs"), "The environment must have a 'num_envs' attribute."
-        raise NotImplementedError("Not adapted to gymnasium 1.0 style wrappers yet")
-        self.cfg = self._parse_config(config, env)
-        # Create wrapped environments so that the observations and actions are always Tensors
-        self.env = wrap_env(env, device=self.cfg.train.device)
-        self.eval_env = wrap_env(eval_env, device=self.cfg.train.device)
-        self.separate_eval_env = self.env.unwrapped is not self.eval_env.unwrapped
-
-        # Set random seeds
-        self.seed = seed
-        self._set_seed(seed)
-
-        self.logger = logger
-        self.policy = self._init_policy()  # Initialize the policy with actor and critic networks
-        # Initialize the optimizers
-        self.actor_optimizer = torch.optim.Adam(
-            self.policy.actor.parameters(), lr=self.cfg.train.actor_lr
-        )
-        self.critic_optimizer = torch.optim.Adam(
-            self.policy.critic.parameters(), lr=self.cfg.train.critic_lr
-        )
-
-        # Initialize the replay buffer
-        self.cfg.rollout.replay_buffer_kwargs |= {
-            "num_envs": self.env.num_envs,
-            "device": self.cfg.train.device,
-        }
-        buffer_cls = self.cfg.rollout.replay_buffer_cls
-        self.buffer = buffer_cls(**self.cfg.rollout.replay_buffer_kwargs)
-
-        # Allocate rollout, train, eval and checkpoint info
-        self.rollout_info = self._init_rollout_info()
-        self.train_info = self._init_train_info()
-        self.eval_info = self._init_eval_info()
-        self.checkpoint_info = self._init_checkpoint_info()
-        self.time_info = self._init_time_info()
-
-        # Don't overwrite the checkpoint path in the config in case it gets reused for multiple runs
-        self.checkpoint_path = unique_folder(self.cfg.checkpoint.path)
-
-    def train_policy(self):
-        """Train the policy using the collected samples in the replay buffer."""
-        self.policy.actor.train()  # Critic is always in train mode, not used for inference
-        self.policy.actor.mode = "train"
-
-        for _ in range(self.cfg.train.steps):
-            # Update 'num_train_steps' at the beginning of the loop so that lower frequency updates
-            # do not get executed at the first iteration when 'num_train_steps' is 0
-            self.train_info.n_train_steps += 1
-
-            if self.train_info.n_train_steps % self.cfg.train.critic_period == 0:
-                batch = self.buffer.sample(self.cfg.train.batch_size)
-                # Compute the expected Q values with the reward and the target networks
-                with torch.no_grad():
-                    next_obs_t = self.cfg.train.obs_transform(batch["next_obs"])
-                    next_action = self.policy.actor.target(next_obs_t)
-                    next_action = self.cfg.train.target_action_transform(next_action)
-                    next_q = self.policy.critic.target(next_obs_t, next_action)
-                    # Reward, terminated are one-dimensional, so we need to reshape them to avoid
-                    # broadcasting errors
-                    reward = batch["reward"].reshape(-1, 1)
-                    terminated = batch["terminated"].reshape(-1, 1)
-                    q_target = reward + (self.cfg.train.gamma * ~terminated * next_q)
-                    q_target = torch.clamp(q_target, *self.cfg.train.reward_clip)
-                # Compute the loss as the MSE between the expected Q values and the Q values from
-                # the critic
-                obs_t = self.cfg.train.obs_transform(batch["obs"])
-                q_1, q_2 = self.policy.critic.values(obs_t, batch["action"])
-                assert q_target.shape == (self.cfg.train.batch_size, 1), q_target.shape
-                assert q_1.shape == q_target.shape, (q_1.shape, q_target.shape)
-                assert q_2.shape == q_target.shape, (q_2.shape, q_target.shape)
-                q1_loss = (q_target - q_1).pow(2).mean()
-                q2_loss = (q_target - q_2).pow(2).mean()
-                critic_loss = q1_loss + q2_loss
-                self.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    self.policy.critic.parameters(), self.cfg.train.grad_clip
-                )
-                self.critic_optimizer.step()
-                self.train_info.log.critic_loss += critic_loss.detach()
-                self.train_info.log.critic_steps_since_log += 1
-
-            if self.train_info.n_train_steps % self.cfg.train.actor_period == 0:
-                batch = self.buffer.sample(self.cfg.train.batch_size)
-                # Compute the actions for the sample observations, compute the critic value of the
-                # observations and actions and compute the actor loss by maximizing the critic value
-                obs_t = self.cfg.train.obs_transform(batch["obs"])
-                train_action = self.policy.actor(obs_t)
-                train_action = self.cfg.train.action_transform(train_action)
-                actor_loss = -self.policy.critic.actor_value(obs_t, train_action).mean()
-
-                self.actor_optimizer.zero_grad()
-                actor_loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    self.policy.actor.parameters(), self.cfg.train.grad_clip
-                )
-                self.actor_optimizer.step()
-                self.train_info.log.actor_loss += actor_loss.detach()
-                self.train_info.log.actor_steps_since_log += 1
-
-            self._log_train()
-            # Update the target networks
-            if self.train_info.n_train_steps % self.cfg.train.actor_target_period == 0:
-                self.policy.actor.update_target(self.cfg.train.tau)
-            if self.train_info.n_train_steps % self.cfg.train.critic_target_period == 0:
-                self.policy.critic.update_target(self.cfg.train.tau)
-
-        self.train_info.n_samples = self.rollout_info.n_samples
-
-    def _parse_config(self, config: SimpleNamespace, env: gymnasium.vector.VectorEnv) -> TD3Config:
-        rollout_config = RolloutConfig(**config.rollout)
-        train_config = TrainConfig(**config.train)
-        eval_config = EvalConfig(**config.eval)
-        checkpoint_config = CheckpointConfig(**config.checkpoint)
-
-        # Check if the config is valid
-        for cfg in (train_config, eval_config, checkpoint_config):
-            if cfg.period is not None and cfg.period % env.num_envs != 0:
-                raise ValueError(
-                    f"Config {cfg} period ({cfg.period}) must be multiple of "
-                    f"'num_envs' ({env.num_envs})."
-                )
-        return TD3Config(rollout_config, train_config, eval_config, checkpoint_config)
-
-    def _init_policy(self) -> TD3Policy:
-        spaces = {"obs_space": self.env.observation_space, "action_space": self.env.action_space}
-        self.cfg.train.actor_kwargs |= spaces
-        actor = self.cfg.train.actor_cls(**self.cfg.train.actor_kwargs)
-        self.cfg.train.policy_kwargs["actor"] = actor
-        self.cfg.train.critic_kwargs |= spaces
-        critic = self.cfg.train.critic_cls(**self.cfg.train.critic_kwargs)
-        self.cfg.train.policy_kwargs["critic"] = critic
-        return TD3Policy(**self.cfg.train.policy_kwargs, device=self.cfg.train.device)

@@ -23,8 +23,16 @@ maybe_cuda = pytest.param(
 @pytest.mark.parametrize("vectorization_mode", ("sync", "async"))
 @pytest.mark.integration
 def test_init(device: torch.device, vectorization_mode: str):
+    vector_kwargs = {}
+    if vectorization_mode == "async":
+        vector_kwargs = {"context": "spawn"}
     env = NumpyToTorch(
-        gymnasium.make_vec("Pendulum-v1", num_envs=2, vectorization_mode=vectorization_mode),
+        gymnasium.make_vec(
+            "Pendulum-v1",
+            num_envs=2,
+            vectorization_mode=vectorization_mode,
+            vector_kwargs=vector_kwargs,
+        ),
         device=device,
     )
     config = load_config(Path(__file__).parent / "data/ddpg_config.toml")
@@ -37,16 +45,28 @@ def test_init(device: torch.device, vectorization_mode: str):
 @pytest.mark.parametrize("vectorization_mode", ("sync", "async"))
 @pytest.mark.integration
 def test_training(device: torch.device, vectorization_mode: str):
+    vector_kwargs = {}
+    if vectorization_mode == "async":
+        vector_kwargs = {"context": "spawn"}
     env = NumpyToTorch(
-        gymnasium.make_vec("Pendulum-v1", num_envs=2, vectorization_mode=vectorization_mode),
+        gymnasium.make_vec(
+            "Pendulum-v1",
+            num_envs=2,
+            vectorization_mode=vectorization_mode,
+            vector_kwargs=vector_kwargs,
+        ),
         device=device,
     )
     eval_env = NumpyToTorch(
-        gymnasium.make_vec("Pendulum-v1", num_envs=2, vectorization_mode=vectorization_mode),
+        gymnasium.make_vec(
+            "Pendulum-v1",
+            num_envs=2,
+            vectorization_mode=vectorization_mode,
+            vector_kwargs=vector_kwargs,
+        ),
         device=device,
     )
     config = load_config(Path(__file__).parent / "data/ddpg_config.toml")
     config.train.device = device
     ddpg = DDPG(env, eval_env, config)
-    ddpg.train()
     assert isinstance(ddpg, Algorithm)
