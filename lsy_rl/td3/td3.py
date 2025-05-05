@@ -46,28 +46,33 @@ def td3(
     target_action_tf: Transform = IdentityTF(),
     logger: Logger = EmptyLogger(),
     device: torch.device = torch.device("cpu"),
-    env_device: torch.device = torch.device("cpu"),
     checkpoint_path: Path | None = None,
     checkpoint_buffer: bool = False,
     seed: int | None = None,
 ) -> TD3Policy:
     set_seeds(seed)
     assert train_envs is not eval_envs, "Train and eval environments must be different"
+    # Move all transforms to the correct device
+    obs_tf.to(device=device)
+    action_tf.to(device=device)
+    train_action_tf.to(device=device)
+    eval_action_tf.to(device=device)
+    target_action_tf.to(device=device)
 
     # Calculate log periods to limit the amount of logging
     N_LOGS = 100
     collect_samples_log_period = n_steps // N_LOGS
-    train_log_period = n_steps // N_LOGS
-    eval_log_period = n_steps // N_LOGS
-    checkpoint_log_period = n_steps // N_LOGS
+    # Number of training calls * number of training iterations / number of logs
+    train_log_period = ((n_steps // train_period) * train_steps) // N_LOGS
 
     if policy is None:
         obs_space = train_envs.single_observation_space
         action_space = train_envs.single_action_space
         actor = TD3Actor(obs_space, action_space)
         critic = TD3Critic(obs_space, action_space)
-        policy = TD3Policy(actor, critic, device=device)
-    policy.to(device)
+        policy = TD3Policy(actor, critic)
+    policy.to(device=device)
+
     critic_optimizer = AdamW(policy.critic.parameters(), lr=critic_lr, eps=eps)
     actor_optimizer = AdamW(policy.actor.parameters(), lr=actor_lr, eps=eps)
 
@@ -79,7 +84,7 @@ def td3(
     train_info = {}
     n_train_steps = 0
     n_samples = 0
-    evaluate_policy(policy, eval_envs, eval_steps, obs_tf, action_tf, n_samples, env_device, logger)
+    evaluate_policy(policy, eval_envs, eval_steps, obs_tf, action_tf, n_samples, logger, device)
     for n_samples, should_train, should_eval, should_checkpoint in collect_samples(
         policy=policy,
         env=train_envs,
@@ -92,8 +97,8 @@ def td3(
         checkpoint_period=checkpoint_period,
         log_period=collect_samples_log_period,
         train_min_samples=train_min_samples,
-        env_device=env_device,
         logger=logger,
+        device=device,
     ):
         if should_train:
             train_info = train_policy(
@@ -123,7 +128,14 @@ def td3(
             n_train_steps += train_steps
         if should_eval:
             evaluate_policy(
-                policy, eval_envs, eval_steps, obs_tf, eval_action_tf, n_samples, env_device, logger
+                policy,
+                eval_envs,
+                eval_steps,
+                obs_tf,
+                eval_action_tf,
+                n_samples,
+                logger,
+                device=device,
             )
         if should_checkpoint and checkpoint_path is not None:
             checkpoint(
@@ -163,8 +175,8 @@ def collect_samples(
     checkpoint_period: int | None,
     log_period: int,
     train_min_samples: int | None,
-    env_device: torch.device,
     logger: Logger,
+    device: torch.device,
 ) -> Generator[tuple[int, bool, bool, bool], None, None]:
     """Collect samples from the environment and store them in the replay buffer.
 
@@ -172,7 +184,6 @@ def collect_samples(
     number of samples is reached. In between samples, it will yield whenever the conditions for
     training, evaluating or checkpointing are met.
     """
-    device = policy.device
     last_train = 0
     last_eval = 0
     last_log = 0
@@ -197,7 +208,7 @@ def collect_samples(
         obs_t = obs_tf(obs)
         action = policy.actor(obs_t)
         action = action_tf(action)
-        next_obs, reward, terminated, truncated, info = env.step(action.to(env_device))
+        next_obs, reward, terminated, truncated, info = env.step(action)
         sample = tensordict_sample(
             obs, action, next_obs, reward, terminated, truncated, info, device=device
         )
@@ -238,7 +249,7 @@ def collect_samples(
             log["time/total_timesteps"] = n_samples
             log["time/fps"] = n_samples / elapsed_time
             logger.log(log, step=n_samples)
-            log_info["ep_steps"], log_info["ep_reward"], log_info["n_episodes"] = 0, 0, 0
+            log_info["ep_steps"], log_info["ep_reward"], log_info["n_episodes"] = (0, 0, 0)
             log_info["last_rewards"] = []
             last_log = n_samples
 
@@ -381,24 +392,22 @@ def evaluate_policy(
     obs_tf: Transform,
     action_tf: Transform,
     n_samples: int,
-    env_device: torch.device,
     logger: Logger,
+    device: torch.device,
 ) -> dict[str, float]:
     """Evaluate the policy on the evaluation environment and log the results."""
     policy.eval()
-    device = policy.device
     rewards = torch.zeros(env.num_envs, device=device)
     steps = torch.zeros(env.num_envs, device=device)
     all_rewards, ep_rewards, ep_steps, ep_last_rewards = [], [], [], []
 
     obs, _ = env.reset()
-    obs = obs.to(device)
     autoreset = False
     n = 0
     while n < n_eval_steps:
         obs_t = obs_tf(obs)
         action = policy.action(obs_t)
-        action = action_tf(action).to(env_device)
+        action = action_tf(action)
         next_obs, reward, terminated, truncated, info = env.step(action)
         sample = tensordict_sample(
             obs, action, next_obs, reward, terminated, truncated, info, device=device
@@ -423,9 +432,9 @@ def evaluate_policy(
 
         n += env.num_envs
 
-    log = {"eval/mean_reward": np.array(all_rewards).mean()}
+    log = {"eval/mean_rewards": np.array(all_rewards).mean()}
     if ep_rewards:
-        log["eval/ep_mean_reward"] = np.array(ep_rewards).mean()
+        log["eval/ep_mean_rewards"] = np.array(ep_rewards).mean()
         log["eval/ep_mean_steps"] = np.array(ep_steps).mean()
         log["eval/mean_last_reward"] = np.array(ep_last_rewards).mean()
     logger.log(log, step=n_samples)
@@ -452,6 +461,7 @@ def checkpoint(
     checkpoint_buffer: bool = False,
 ):
     """Save a checkpoint of the policy, replay buffer and optimizers."""
+    assert isinstance(path, Path), "The checkpoint path must be a Path object."
     assert path.is_dir(), "The checkpoint path must be a directory."
     policy.save(path / "policy.pt")
     if checkpoint_buffer:

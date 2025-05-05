@@ -295,6 +295,19 @@ class UnitNormTF(Transform):
         return x
 
 
+class FunctionalTF(Transform):
+    """Apply a functional transformation to the input Tensor."""
+
+    def __init__(self, fn: Callable[[Tensor], Tensor], shared: bool = False):
+        """Initialize the functional transformation."""
+        super().__init__(shared=shared)
+        self.params["fn"] = fn
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Apply the functional transformation to the input Tensor."""
+        return self.params["fn"](x)
+
+
 class TensorNormTF(Transform):
     """Normalize Tensors with running statistics of the mean and standard deviation."""
 

@@ -54,13 +54,12 @@ class TD3Critic(nn.Module):
 
 
 class TD3Policy(Policy):
-    def __init__(self, actor: TD3Actor, critic: TD3Critic, device: str = "cpu"):
+    def __init__(self, actor: TD3Actor, critic: TD3Critic):
         super().__init__()
         # Compile disabled for now. Does not yield any performance improvements
-        self.device = torch.device(device)
-        self.actor = actor.to(self.device)
+        self.actor = actor
         # self.actor = torch.compile(self.actor)
-        self.critic = critic.to(self.device)
+        self.critic = critic
         # self.critic = torch.compile(self.critic)
 
     def action(self, obs: FloatTensor) -> FloatTensor:
