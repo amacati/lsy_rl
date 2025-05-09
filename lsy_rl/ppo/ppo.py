@@ -7,33 +7,43 @@ from gymnasium.vector import VectorEnv
 from tensordict import TensorDict
 from torch.optim import AdamW
 
-from lsy_rl.core.logger import EmptyLogger, Logger
+from lsy_rl.core.logger import Collector, EmptyLogger, LogCollector, LogCollectorList, Logger
 from lsy_rl.core.replay_buffer import TrajectoryBuffer
 from lsy_rl.ppo.policy import PPOActor, PPOCritic, PPOPolicy
 from lsy_rl.utils.utils import set_seeds, sync_env_normalization
 
 
 def evaluate_agent(
-    envs: VectorEnv, policy: PPOPolicy, n_steps: int, device: str, seed: int | None = None
-) -> tuple[list[float], list[int]]:
+    envs: VectorEnv,
+    policy: PPOPolicy,
+    n_steps: int,
+    device: str,
+    collector: Collector,
+    seed: int | None = None,
+) -> dict[str, float]:
     obs, _ = envs.reset(seed=seed)
-    ep_rewards = torch.zeros(envs.num_envs, device=device)
-    ep_steps = torch.zeros_like(ep_rewards)
     autoreset = torch.zeros(envs.num_envs, dtype=bool, device=device)
-    rewards, steps = [], []  # All eval rewards are at the same global step, so we average
+    logs = []  # All eval logs are at the same global step, so we average
     for _ in range(n_steps):
         with torch.no_grad():
             action, _, _, _ = policy.action_and_value(obs, deterministic=True)
-        obs, reward, terminated, truncated, _ = envs.step(action)
-        ep_rewards += reward
-        ep_steps += 1
+        next_obs, reward, terminated, truncated, info = envs.step(action)
+        collector.collect(obs, action, next_obs, reward, terminated, truncated, info, autoreset)
         done = terminated | truncated
-        rewards.extend([r.item() for r in ep_rewards[done]])
-        steps.extend([s.item() for s in ep_steps[done]])
-        ep_rewards[autoreset] = 0
-        ep_steps[autoreset] = 0
+        if done.any():
+            logs.append(collector.log(done))
+            collector.clear(autoreset)
         autoreset = done
-    return rewards, steps
+        obs = next_obs
+    # Average over all metrics
+    avg_log = {}
+    for log in logs:
+        for k, v in log.items():
+            if k not in avg_log:
+                avg_log[k] = []
+            avg_log[k].append(v)
+    avg_log = {k: sum(v) / len(v) for k, v in avg_log.items()}
+    return avg_log
 
 
 def ppo(
@@ -59,8 +69,10 @@ def ppo(
     device: torch.device = torch.device("cpu"),
     logger: Logger = EmptyLogger(),
     agent: PPOPolicy | None = None,
+    rollout_log_collector: Collector | None = None,
+    eval_log_collector: Collector | None = None,
     seed: int | None = None,
-):
+) -> PPOPolicy:
     set_seeds(seed)
     assert train_envs is not eval_envs, "Train and eval environments must be different"
     if target_kl is not None and target_kl < 0:
@@ -72,9 +84,12 @@ def ppo(
     minibatch_size = batch_size // n_minibatches
     n_iterations = n_total_steps // batch_size
 
-    n_total_steps = n_iterations * batch_size
     if n_iterations < 1:
-        return
+        raise ValueError(
+            f"Number of train steps with {n_total_steps:.2e} total steps and {batch_size:.2e} batch size "
+            "is < 1"
+        )
+    n_total_steps = n_iterations * batch_size
 
     if agent is None:
         obs_shape = train_envs.single_observation_space.shape
@@ -91,12 +106,20 @@ def ppo(
 
     # Stats tracking setup
     global_step = 0
-    ep_rewards = torch.zeros(n_envs, dtype=torch.float32, device=device)
-    ep_steps = torch.zeros(n_envs, dtype=torch.int32, device=device)
     last_eval = global_step
     autoreset = torch.zeros(n_envs, dtype=bool, device=device)
 
     obs, _ = train_envs.reset(seed=seed)
+
+    # Create metric collectors
+    if rollout_log_collector is None:
+        rollout_log_collector = LogCollectorList()
+        rollout_log_collector.append(LogCollector(target="reward", log_key="rollout/ep_reward"))
+        rollout_log_collector.append(LogCollector(target="step", log_key="rollout/ep_step"))
+    if eval_log_collector is None:
+        eval_log_collector = LogCollectorList()
+        eval_log_collector.append(LogCollector(target="reward", log_key="eval/mean_rewards"))
+        eval_log_collector.append(LogCollector(target="step", log_key="eval/mean_steps"))
 
     for iteration in range(1, n_iterations + 1):
         start_time = time.perf_counter()
@@ -105,9 +128,11 @@ def ppo(
             with torch.no_grad():
                 action, logprob, _, value = agent.action_and_value(obs)
             next_obs, reward, terminated, truncated, info = train_envs.step(action)
+            # Aggregate logs in a customizable way
+            rollout_log_collector.collect(
+                obs, action, next_obs, reward, terminated, truncated, info, autoreset
+            )
             done = terminated | truncated
-            ep_rewards += reward
-            ep_steps += 1
             # Add sample to buffer
             mask = active & ~autoreset
             sample = TensorDict(
@@ -127,16 +152,9 @@ def ppo(
             global_step += mask.sum().item()
 
             if done.any():
-                logger.log(
-                    {
-                        "rollout/ep_reward": ep_rewards[done].mean().item(),
-                        "rollout/ep_step": ep_steps[done].float().mean().item(),
-                    },
-                    step=global_step,
-                )
+                logger.log(rollout_log_collector.log(done), step=global_step)
+                rollout_log_collector.clear(autoreset)
 
-            ep_rewards[autoreset] = 0
-            ep_steps[autoreset] = 0
             autoreset = done
             obs = next_obs
         assert buffer.full(), "Buffer is not full"
@@ -149,7 +167,6 @@ def ppo(
             lastgaelam = 0
             for t in reversed(range(n_steps)):
                 if t == n_steps - 1:
-                    # TODO: Check that terminated is correct instead of dones
                     nextnonterminal = 1.0 - buffer["terminated"][t]
                     nextvalues = next_value
                 else:
@@ -248,14 +265,15 @@ def ppo(
             tstart = time.perf_counter()
             sync_env_normalization(train_envs, eval_envs)
             eval_seed = seed if seed is None else seed + iteration
-            eval_rewards, eval_steps = evaluate_agent(
-                eval_envs, agent, n_steps=n_eval_steps, device=device, seed=eval_seed
+            logs = evaluate_agent(
+                eval_envs,
+                agent,
+                n_steps=n_eval_steps,
+                device=device,
+                collector=eval_log_collector,
+                seed=eval_seed,
             )
-            mean_rewards = np.nan if not eval_rewards else np.mean(eval_rewards)
-            mean_steps = np.nan if not eval_steps else np.mean(eval_steps)
-            logger.log(
-                {"eval/mean_rewards": mean_rewards, "eval/mean_steps": mean_steps}, step=global_step
-            )
+            logger.log(logs, step=global_step)
             last_eval = global_step
             logger.log({"time/eval": time.perf_counter() - tstart}, step=global_step)
         buffer.clear()
