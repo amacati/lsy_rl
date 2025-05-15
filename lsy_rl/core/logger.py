@@ -91,6 +91,8 @@ class ConsoleLogger(Logger):
         self._current_step = step
 
     def flush(self):
+        if self._current_step is None:
+            return
         log = self._log[self._current_step]
         if not log:
             return
@@ -247,3 +249,6 @@ class LogCollectorList(Collector):
     def clear(self, mask):
         for collector in self._collectors:
             collector.clear(mask)
+
+    def __getitem__(self, idx):
+        return self._collectors[idx]

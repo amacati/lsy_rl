@@ -1,4 +1,5 @@
 import time
+import warnings
 
 import numpy as np
 import torch
@@ -22,6 +23,7 @@ def evaluate_agent(
     seed: int | None = None,
 ) -> dict[str, float]:
     obs, _ = envs.reset(seed=seed)
+    collector.clear(mask=torch.ones(envs.num_envs, dtype=torch.bool))
     autoreset = torch.zeros(envs.num_envs, dtype=bool, device=device)
     logs = []  # All eval logs are at the same global step, so we average
     for _ in range(n_steps):
@@ -85,9 +87,9 @@ def ppo(
     n_iterations = n_total_steps // batch_size
 
     if n_iterations < 1:
-        raise ValueError(
-            f"Number of train steps with {n_total_steps:.2e} total steps and {batch_size:.2e} batch size "
-            "is < 1"
+        warnings.warn(
+            f"Number of train steps with {n_total_steps:.2e} total steps and {batch_size:.2e} batch"
+            " size is < 1, returning without training"
         )
     n_total_steps = n_iterations * batch_size
 
@@ -153,6 +155,7 @@ def ppo(
 
             if done.any():
                 logger.log(rollout_log_collector.log(done), step=global_step)
+            if autoreset.any():
                 rollout_log_collector.clear(autoreset)
 
             autoreset = done
