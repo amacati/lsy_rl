@@ -34,6 +34,7 @@ def evaluate_agent(
         done = terminated | truncated
         if done.any():
             logs.append(collector.log(done))
+        if autoreset.any():
             collector.clear(autoreset)
         autoreset = done
         obs = next_obs

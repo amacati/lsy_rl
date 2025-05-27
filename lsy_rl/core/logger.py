@@ -9,6 +9,7 @@ from typing import Mapping
 import numpy as np
 import torch
 from array_api_compat import array_namespace
+from numpy.typing import ArrayLike
 
 
 class Logger(ABC):
@@ -106,17 +107,16 @@ class ConsoleLogger(Logger):
 
 
 class MemLogger(Logger):
-    def __init__(self, filter: str | None = None):
-        super().__init__()
+    def __init__(self, filter: str | None = None, rate_limit: float | None = None):
+        super().__init__(filter=filter, rate_limit=rate_limit)
         self._log = dict()
-        self._filter = filter
 
     @property
     def data(self):
         return self._log
 
     def log(self, data: dict, step: int, flush: bool = False):
-        data = {k: v for k, v in data.items() if self._filter is None or self._filter in k}
+        data = self.filter(data)
         if not data:
             return
         self._log[step] = self._log.get(step, dict()) | data
@@ -181,7 +181,7 @@ class Collector:
     def log(self, mask):
         return {}
 
-    def clear(self, mask): ...
+    def clear(self, mask: ArrayLike | None = None): ...
 
 
 class LogCollector(Collector):
@@ -212,9 +212,9 @@ class LogCollector(Collector):
             return {}
         return {k: float(self._xp.mean(v[mask])) for k, v in self._log.items()}
 
-    def clear(self, mask):
+    def clear(self, mask: ArrayLike | None = None):
         for k in self._log:
-            self._log[k][mask] = 0
+            self._log[k][mask if mask is not None else ...] = 0
 
     def _collect_reward(self, rewards):
         if self._log_key not in self._log:
@@ -246,7 +246,7 @@ class LogCollectorList(Collector):
             logs.update(collector.log(mask))
         return logs
 
-    def clear(self, mask):
+    def clear(self, mask: ArrayLike | None = None):
         for collector in self._collectors:
             collector.clear(mask)
 
