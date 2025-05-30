@@ -26,7 +26,7 @@ def evaluate_agent(
     collector.clear(mask=torch.ones(envs.num_envs, dtype=torch.bool))
     autoreset = torch.zeros(envs.num_envs, dtype=bool, device=device)
     logs = []  # All eval logs are at the same global step, so we average
-    for _ in range(n_steps):
+    for _ in range(0, n_steps, envs.num_envs):
         with torch.no_grad():
             action, _, _, _ = policy.action_and_value(obs, deterministic=True)
         next_obs, reward, terminated, truncated, info = envs.step(action)
