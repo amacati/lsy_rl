@@ -118,11 +118,11 @@ def ppo(
     if rollout_log_collector is None:
         rollout_log_collector = LogCollectorList()
         rollout_log_collector.append(LogCollector(target="reward", log_key="rollout/ep_reward"))
-        rollout_log_collector.append(LogCollector(target="step", log_key="rollout/ep_step"))
+        rollout_log_collector.append(LogCollector(target="step", log_key="rollout/ep_steps"))
     if eval_log_collector is None:
         eval_log_collector = LogCollectorList()
-        eval_log_collector.append(LogCollector(target="reward", log_key="eval/mean_rewards"))
-        eval_log_collector.append(LogCollector(target="step", log_key="eval/mean_steps"))
+        eval_log_collector.append(LogCollector(target="reward", log_key="eval/ep_reward"))
+        eval_log_collector.append(LogCollector(target="step", log_key="eval/ep_steps"))
 
     for iteration in range(1, n_iterations + 1):
         start_time = time.perf_counter()
@@ -145,6 +145,7 @@ def ppo(
                     "next_obs": next_obs[mask],
                     "reward": reward[mask],
                     "terminated": terminated[mask].float(),
+                    "done": (truncated[mask] | terminated[mask]).float(),
                     "logprob": logprob[mask],
                     "value": value[mask].squeeze(dim=-1),
                 },
@@ -166,19 +167,30 @@ def ppo(
 
         # bootstrap value if not done
         with torch.no_grad():
-            next_value = agent.value(obs).reshape(1, -1)
-            advantages = torch.zeros_like(buffer["reward"]).to(device)
+            next_value = agent.value(next_obs).reshape(1, -1)
+            advantages = torch.zeros_like(buffer["reward"], device=device)
             lastgaelam = 0
             for t in reversed(range(n_steps)):
-                if t == n_steps - 1:
-                    nextnonterminal = 1.0 - buffer["terminated"][t]
-                    nextvalues = next_value
-                else:
-                    nextnonterminal = 1.0 - buffer["terminated"][t + 1]
-                    nextvalues = buffer["value"][t + 1]
-                future_reward = gamma * nextvalues * nextnonterminal
-                delta = buffer["reward"][t] + future_reward - buffer["value"][t]
-                lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
+                # Deviation from CleanRL:
+                #
+                # 1.) We use terminated instead of done because the final state of a truncated
+                # episode does not end the episode, therefore not cutting off the bootstrapped value
+                # estimate. See https://farama.org/Gymnasium-Terminated-Truncated-Step-API
+                #
+                # 2.) We store the buffer of terminated returned after stepping without assuming an
+                # initial terminated state of all 0s (CleanRL never uses this 0th terminated state).
+                # Our version is therefore shifted by 1 to the right, and we do not use
+                # buffer["terminated"][t + 1]. In addition, we add the final terminated to the end
+                # of the buffer, so we do not need to handle the final value case separately.
+                nextnonterminal = 1.0 - buffer["terminated"][t]
+                nextvalues = next_value if t == n_steps - 1 else buffer["value"][t + 1]
+                delta = buffer["reward"][t] + gamma * nextvalues * nextnonterminal - buffer["value"][t]  # fmt: skip
+                # While the value needs to bootstrap across the truncated boundary, we cannot use
+                # the gae lambda term for episodes that are done, because that would mix the value
+                # estimates from two unrelated episodes. Therefore, we need to mask the gae lambda
+                # term for done (truncated or terminated) episodes.
+                nextdone = 1 - buffer["done"][t]
+                lastgaelam = delta + gamma * gae_lambda * nextdone * lastgaelam
                 advantages[t] = lastgaelam
             returns = advantages + buffer["value"]
 
