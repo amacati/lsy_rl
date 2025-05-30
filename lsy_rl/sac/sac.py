@@ -22,7 +22,7 @@ def evaluate_agent(
     ep_steps = torch.zeros_like(ep_rewards)
     autoreset = torch.zeros(envs.num_envs, dtype=bool, device=device)
     rewards, steps = [], []  # All eval rewards are at the same global step, so we average
-    for _ in range(n_steps):
+    for _ in range(0, n_steps, envs.num_envs):
         with torch.no_grad():
             action = policy.actor.mean_action(obs)
         obs, reward, terminated, truncated, _ = envs.step(action)

@@ -462,7 +462,8 @@ def checkpoint(
 ):
     """Save a checkpoint of the policy, replay buffer and optimizers."""
     assert isinstance(path, Path), "The checkpoint path must be a Path object."
-    assert path.is_dir(), "The checkpoint path must be a directory."
+    assert path.exists(), f"Checkpoint path {path} doesn't exist."
+    assert path.is_dir(), f"The checkpoint path {path} must be a directory."
     policy.save(path / "policy.pt")
     if checkpoint_buffer:
         buffer.save(path / "buffer.pt")

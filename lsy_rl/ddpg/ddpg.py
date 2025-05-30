@@ -7,7 +7,7 @@ import gymnasium
 import numpy as np
 import torch
 from gymnasium.vector import VectorEnv
-from munch import Munch
+from ml_collections import ConfigDict
 
 from lsy_rl.core import Algorithm
 from lsy_rl.core.logger import EmptyLogger, Logger
@@ -451,52 +451,54 @@ class DDPG(Algorithm):
         self.cfg.train.policy_kwargs["critic"] = critic
         return DDPGPolicy(**self.cfg.train.policy_kwargs, device=self.cfg.train.device)
 
-    def _init_rollout_info(self) -> Munch:
+    def _init_rollout_info(self) -> ConfigDict:
         """Initialize a container to store rollout information for flow control and logging."""
-        info = Munch()
+        info = ConfigDict()
         info.n_samples = 0
         info.steps = torch.zeros(self.env.num_envs, device=self.cfg.train.device)
         info.rewards = torch.zeros(self.env.num_envs, device=self.cfg.train.device)
         info.log_period = max(1, self.cfg.rollout.max_samples // self.num_logs)
         info.last_log = 0
-        info.log = Munch({"ep_steps": 0, "ep_reward": 0, "n_episodes": 0, "last_rewards": []})
+        info.log = ConfigDict({"ep_steps": 0, "ep_reward": 0, "n_episodes": 0, "last_rewards": []})
         info.start_time = time.time()
         info.autoreset = False
         info.last_obs = None
         return info
 
-    def _init_train_info(self) -> Munch:
+    def _init_train_info(self) -> ConfigDict:
         """Initialize a container to store training information for flow control and logging."""
-        info = Munch()
+        info = ConfigDict()
         info.n_samples = 0
         info.n_train_steps = 0
         num_trainings = self.cfg.rollout.max_samples // self.cfg.train.period
         total_train_steps = num_trainings * self.cfg.train.steps
         info.log_period = max(1, total_train_steps // self.num_logs)
         info.last_log = 0
-        log = Munch()
+        log = ConfigDict()
         log.actor_loss, log.actor_steps_since_log = 0, 0
         log.critic_loss, log.critic_steps_since_log = 0, 0
         info.log = log
         return info
 
-    def _init_eval_info(self) -> Munch:
+    def _init_eval_info(self) -> ConfigDict:
         """Initialize a container to store evaluation information for flow control and logging."""
-        info = Munch()
+        info = ConfigDict()
         info.n_samples = 0
         info.last_log = 0
         info.steps = torch.zeros(self.eval_env.num_envs, device=self.cfg.train.device)
         info.rewards = torch.zeros(self.eval_env.num_envs, device=self.cfg.train.device)
         return info
 
-    def _init_time_info(self) -> Munch:
-        info = Munch()
+    def _init_time_info(self) -> ConfigDict:
+        info = ConfigDict()
         info.n_samples = 0
         info.last_log = 0
         info.log_period = max(1, self.cfg.rollout.max_samples // self.num_logs)
-        info.log = Munch({"time/rollout": 0, "time/train": 0, "time/eval": 0, "time/checkpoint": 0})
+        info.log = ConfigDict(
+            {"time/rollout": 0, "time/train": 0, "time/eval": 0, "time/checkpoint": 0}
+        )
         return info
 
-    def _init_checkpoint_info(self) -> Munch:
+    def _init_checkpoint_info(self) -> ConfigDict:
         """Initialize a container to store checkpoint information for flow control and logging."""
-        return Munch({"n_samples": 0})
+        return ConfigDict({"n_samples": 0})
