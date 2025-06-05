@@ -126,12 +126,18 @@ def ppo(
     # Create metric collectors
     if rollout_log_collector is None:
         rollout_log_collector = CollectorList()
-        rollout_log_collector.append(LogCollector(target="reward", log_key="rollout/ep_reward"))
-        rollout_log_collector.append(LogCollector(target="step", log_key="rollout/ep_steps"))
+        rollout_log_collector.append(
+            LogCollector(target="reward", log_key="rollout/reward", reduce="sum")
+        )
+        rollout_log_collector.append(
+            LogCollector(target="reward", log_key="rollout/steps", reduce="cnt")
+        )
     if eval_log_collector is None:
         eval_log_collector = CollectorList()
-        eval_log_collector.append(LogCollector(target="reward", log_key="eval/ep_reward"))
-        eval_log_collector.append(LogCollector(target="step", log_key="eval/ep_steps"))
+        eval_log_collector.append(
+            LogCollector(target="reward", log_key="eval/reward", reduce="sum")
+        )
+        eval_log_collector.append(LogCollector(target="reward", log_key="eval/steps", reduce="cnt"))
 
     for iteration in range(1, n_iterations + 1):
         start_time = time.perf_counter()

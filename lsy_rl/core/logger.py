@@ -220,7 +220,7 @@ class LogCollector(Collector):
 
         # Initialize or update log based on reduction method
         if self._log is None:
-            return self._init_log(target_val)
+            self._init_log(target_val)
         if self._reduce == "cnt":
             self._log += 1
         elif self._reduce == "mean":
@@ -231,8 +231,8 @@ class LogCollector(Collector):
 
     def _init_log(self, target_val: ArrayLike):
         if self._reduce == "cnt":
-            device = target_val.device
-            self._log = self._xp.zeros(len(target_val), device=device)
+            n = 1 if target_val.ndim == 0 else len(target_val)
+            self._log = self._xp.zeros(n, device=target_val.device)
         elif self._reduce == "mean":
             n = 1 if target_val.ndim == 0 else len(target_val)
             self._cnt = self._xp.zeros(n, device=target_val.device)
