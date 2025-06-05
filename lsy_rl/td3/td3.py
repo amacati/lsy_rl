@@ -245,16 +245,6 @@ def collect_samples(
         autoreset = done
         obs = next_obs
 
-        elapsed_time = time.time() - start_time
-        logger.log(
-            {
-                "time/elapsed": elapsed_time,
-                "time/steps": n_samples,
-                "time/fps": n_samples / elapsed_time,
-            },
-            step=n_samples,
-        )
-
         train_condition = check_interrupt_sample(
             n_samples, last_train, period=train_period, min_samples=train_min_samples
         )
@@ -269,6 +259,15 @@ def collect_samples(
         if checkpoint_condition:
             last_checkpoint = n_samples
         if train_condition or eval_condition or checkpoint_condition:
+            elapsed_time = time.time() - start_time
+            logger.log(
+                {
+                    "time/elapsed": elapsed_time,
+                    "time/steps": n_samples,
+                    "time/fps": n_samples / elapsed_time,
+                },
+                step=n_samples,
+            )
             yield n_samples, train_condition, eval_condition, checkpoint_condition
 
 
