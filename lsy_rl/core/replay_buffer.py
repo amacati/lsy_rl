@@ -54,14 +54,19 @@ class ReplayBuffer(ABC):
 
 
 def _allocate_buffers(buffer: TensorDict, sample: TensorDict) -> TensorDict:
+    """Allocate buffers for unknown keys in the sample."""
+    n_batch_dims = len(buffer.batch_size) - 1
     for key, val in sample.items():
         if key not in buffer.keys():
             if isinstance(val, torch.Tensor):
-                buffer[key] = torch.zeros((*buffer.batch_size, *val.shape[1:]), dtype=val.dtype)
+                buffer[key] = torch.zeros(
+                    (*buffer.batch_size, *val.shape[n_batch_dims:]), dtype=val.dtype
+                )
             elif isinstance(val, TensorDict):
                 buffer[key] = TensorDict({}, batch_size=(buffer.batch_size), device=buffer.device)
             else:
                 raise TypeError(f"Unsupported type {type(val)}")
+    return buffer
 
 
 class SimpleReplayBuffer(ReplayBuffer):
@@ -103,7 +108,7 @@ class SimpleReplayBuffer(ReplayBuffer):
         num_samples = sample.batch_size[0]
         assert num_samples < self.max_size, "Vectorized sample size must be smaller than the buffer"
         # Check if there are unknown keys in the sample and allocate buffers for them if necessary
-        self._allocate_buffers(sample)  # TODO: Replace with module _allocate_buffers
+        _allocate_buffers(self.buffer, sample)
         # If num_samples + self._idx > self.max_size, the index wraps around to the beginning of the
         # buffer. We take the index vector modulo ``self.max_size`` to implement this behavior.
         idx = torch.arange(self._idx, self._idx + num_samples) % self.max_size
@@ -111,16 +116,6 @@ class SimpleReplayBuffer(ReplayBuffer):
         # Update the helper indices
         self._idx = (self._idx + num_samples) % self.max_size
         self._maxidx = min(self._maxidx + num_samples, self.max_size - 1)
-
-    def _allocate_buffers(self, sample: TensorDict):
-        for key, val in sample.items():
-            if key not in self.buffer.keys():
-                if isinstance(val, torch.Tensor):
-                    self.buffer[key] = torch.zeros((self.max_size, *val.shape[1:]), dtype=val.dtype)
-                elif isinstance(val, TensorDict):
-                    self.buffer[key] = TensorDict({}, batch_size=self.max_size, device=self.device)
-                else:
-                    raise TypeError(f"Unsupported type {type(val)}")
 
     def sample(self, batch_size: int) -> TensorDict[torch.Tensor]:
         """Sample a batch of transitions from the buffer."""
@@ -289,7 +284,7 @@ class VectorReplayBuffer(ReplayBuffer):
         v_idx = self._default_v_idx if v_idx is None else v_idx
         assert sample.batch_size[0] == v_idx.shape[0], "Sample size must match the env index"
         # Check if there are unknown keys in the sample and allocate buffers for them if necessary
-        self._allocate_buffers(sample)  # TODO: Replace with module _allocate_buffers
+        _allocate_buffers(self.buffer, sample)
         # Count the number of samples per environment
         num_samples = torch.bincount(v_idx, minlength=self.num_envs).to(self.device)
         assert torch.max(num_samples) < self.bufflen, "Sample sizes must be smaller than the buffer"
@@ -302,20 +297,6 @@ class VectorReplayBuffer(ReplayBuffer):
         self._maxidx[v_idx] = torch.clip(
             self._maxidx[v_idx] + num_samples[v_idx], max=self.bufflen - 1
         )
-
-    def _allocate_buffers(self, sample: TensorDict):
-        for key, val in sample.items():
-            if key not in self.buffer.keys():
-                if isinstance(val, torch.Tensor):
-                    self.buffer[key] = torch.zeros(
-                        (self.num_envs, self.bufflen, *val.shape[1:]), dtype=val.dtype
-                    )
-                elif isinstance(val, TensorDict):
-                    self.buffer[key] = TensorDict(
-                        {}, batch_size=(self.num_envs, self.bufflen), device=self.device
-                    )
-                else:
-                    raise TypeError(f"Unsupported type {type(val)}")
 
     @staticmethod
     def _categorical_cumsum(x: torch.Tensor) -> torch.Tensor:
@@ -346,8 +327,8 @@ class VectorReplayBuffer(ReplayBuffer):
         """Clear the replay buffer."""
         for b in self.buffer.values():
             b.zero_()
-        self._idx = 0
-        self._maxidx = -1
+        self._idx[:] = 0
+        self._maxidx[:] = -1
 
     def save(self, path: Path):
         """Save the replay buffer to a file.
@@ -402,8 +383,8 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
         self.p_her = p_her
         # We track the remaining steps to the end of the trajectory for each environment. The is
         # necessary to sample a virtual goal from future states of the same trajectory
-        self._idx = 0
-        self._maxidx = -1
+        self._idx = torch.zeros((num_envs,), dtype=int, device=self.device)
+        self._maxidx = -torch.ones((num_envs,), dtype=int, device=self.device)
         self._remaining_steps = torch.empty(
             (num_envs, max_size // num_envs), dtype=int, device=self.device
         )
@@ -412,33 +393,37 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
 
     def __len__(self) -> int:
         """Return the number of valid samples in the buffer."""
-        return (self._maxidx + 1) * self.num_envs
+        return torch.sum(self._maxidx + 1).item()
 
-    def add(self, sample: TensorDict[torch.Tensor]):
+    def add(self, sample: TensorDict[torch.Tensor], v_idx: IntTensor | None = None):
         """Add a vectorized sample to the buffer.
 
         If the buffer is full, overwrite the oldest samples.
         """
-        self._allocate_buffers(sample)  # TODO: Replace with module _allocate_buffers
+        _allocate_buffers(self.buffer, sample)
+        if v_idx is not None:
+            assert len(v_idx) == len(torch.unique(v_idx)), "v_idx must contain unique indices"
+            v_idx = v_idx.to(self.device)
+        else:
+            v_idx = self._default_v_idx
         # A sample must contain exactly one sample per vector entry
-        v_idx = self._default_v_idx
         assert sample.batch_size[0] == v_idx.shape[0], "Sample size must match the env index"
         # +1 because we overwrite to 0 inclusive
-        self._remaining_steps[v_idx, self._idx] = 0
+        self._remaining_steps[v_idx, self._idx[v_idx]] = 0
         col_idx, row_idx = self._col_row_idx(self._idx, self._running_steps, self.bufflen)
         self._remaining_steps[col_idx, row_idx] += 1
         self._running_steps += 1
         done = (sample["terminated"] | sample["truncated"]).squeeze()  # Remove batch dimension
-        self._running_steps[done] = 0
-        self.buffer[v_idx, self._idx] = sample
+        self._running_steps[v_idx[done.to(self.device)]] = 0
+        self.buffer[v_idx, self._idx[v_idx]] = sample
         # Update the helper indices
-        self._idx = (self._idx + 1) % self.bufflen
-        self._maxidx = min(self._maxidx + 1, self.bufflen - 1)
+        self._idx[v_idx] = (self._idx[v_idx] + 1) % self.bufflen
+        self._maxidx[v_idx] = torch.clip(self._maxidx[v_idx] + 1, max=self.bufflen - 1)
 
     @staticmethod
     @torch.jit.script
     def _col_row_idx(
-        row_end: int, row_lengths: torch.Tensor, max_len: int
+        row_end: torch.Tensor, row_lengths: torch.Tensor, max_len: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Create column and row index vectors for a 2D matrix.
 
@@ -455,9 +440,13 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
             row_lengths: The lengths of the rows.
             max_len: The maximum length of the rows.
         """
+        assert row_end.shape == row_lengths.shape, (
+            "row_end and row_lengths must have the same shape"
+        )
+        device = row_end.device
         row_idx = torch.cat(
             [
-                (torch.arange(-row_lengths[i], 0) + row_end) % max_len
+                (torch.arange(-row_lengths[i], 0, device=device) + row_end[i]) % max_len
                 for i in range(len(row_lengths))
             ]
         )
@@ -487,7 +476,7 @@ class HerVectorReplayBuffer(VectorReplayBuffer):
         #
         # 6.) Set the desired goal of the HER samples to the virtual goal and recalculate the reward
         v_idx = torch.randint(self.num_envs, size=(batch_size,), device=self.device)
-        idx = torch.randint(self._maxidx, size=(batch_size,), device=self.device)
+        idx = (torch.rand(batch_size, device=self.device) * self._maxidx[v_idx]).long()
         # Check if all samples are valid
         assert torch.all(self._remaining_steps[v_idx, idx] >= 0), "Invalid samples in the batch"
         # Clone the batch and sample HER indices

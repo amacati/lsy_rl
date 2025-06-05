@@ -31,13 +31,13 @@ def test_training(device: torch.device, vectorization_mode: str, batch_size: int
 
     env = gymnasium.make_vec(
         "Pendulum-v1",
-        num_envs=10,
+        num_envs=3,
         vectorization_mode=vectorization_mode,
         vector_kwargs=vector_kwargs,
     )
     eval_env = gymnasium.make_vec(
         "Pendulum-v1",
-        num_envs=10,
+        num_envs=3,
         vectorization_mode=vectorization_mode,
         vector_kwargs=vector_kwargs,
     )

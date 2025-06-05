@@ -8,7 +8,7 @@ from gymnasium.vector import VectorEnv
 from tensordict import TensorDict
 from torch.optim import AdamW
 
-from lsy_rl.core.logger import Collector, EmptyLogger, LogCollector, LogCollectorList, Logger
+from lsy_rl.core.logger import Collector, CollectorList, EmptyLogger, LogCollector, Logger
 from lsy_rl.core.replay_buffer import TrajectoryBuffer
 from lsy_rl.ppo.policy import PPOActor, PPOCritic, PPOPolicy
 from lsy_rl.utils.utils import set_seeds, sync_env_normalization
@@ -30,7 +30,16 @@ def evaluate_agent(
         with torch.no_grad():
             action, _, _, _ = policy.action_and_value(obs, deterministic=True)
         next_obs, reward, terminated, truncated, info = envs.step(action)
-        collector.collect(obs, action, next_obs, reward, terminated, truncated, info, autoreset)
+        collector.collect(
+            obs=obs,
+            action=action,
+            next_obs=next_obs,
+            reward=reward,
+            terminated=terminated,
+            truncated=truncated,
+            info=info,
+            autoreset=autoreset,
+        )
         done = terminated | truncated
         if done.any():
             logs.append(collector.log(done))
@@ -116,11 +125,11 @@ def ppo(
 
     # Create metric collectors
     if rollout_log_collector is None:
-        rollout_log_collector = LogCollectorList()
+        rollout_log_collector = CollectorList()
         rollout_log_collector.append(LogCollector(target="reward", log_key="rollout/ep_reward"))
         rollout_log_collector.append(LogCollector(target="step", log_key="rollout/ep_steps"))
     if eval_log_collector is None:
-        eval_log_collector = LogCollectorList()
+        eval_log_collector = CollectorList()
         eval_log_collector.append(LogCollector(target="reward", log_key="eval/ep_reward"))
         eval_log_collector.append(LogCollector(target="step", log_key="eval/ep_steps"))
 
@@ -133,7 +142,14 @@ def ppo(
             next_obs, reward, terminated, truncated, info = train_envs.step(action)
             # Aggregate logs in a customizable way
             rollout_log_collector.collect(
-                obs, action, next_obs, reward, terminated, truncated, info, autoreset
+                obs=obs,
+                action=action,
+                next_obs=next_obs,
+                reward=reward,
+                terminated=terminated,
+                truncated=truncated,
+                info=info,
+                autoreset=autoreset,
             )
             done = terminated | truncated
             # Add sample to buffer

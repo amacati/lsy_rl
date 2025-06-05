@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from pathlib import Path
 from types import NoneType
-from typing import Mapping
+from typing import Any, Mapping
 
 import numpy as np
 import torch
@@ -87,9 +87,14 @@ class ConsoleLogger(Logger):
         data = self.filter(data)
         data = self.rate_limit(data, step)
         self._log[step] = self._log.get(step, dict()) | data
-        if flush or self._current_step is not None and step > self._current_step:
+        if self._current_step is not None and step > self._current_step:
             self.flush()
+        # Handle the case that we are at a new step (which does not get flushed by the previous one)
+        # and flush was explicitly called
+        flush_current = flush and self._current_step != step
         self._current_step = step
+        if flush_current:
+            self.flush()
 
     def flush(self):
         if self._current_step is None:
@@ -176,54 +181,90 @@ class WandBLogger(Logger):
 
 
 class Collector:
-    def collect(self, obs, actions, next_obs, rewards, terminated, truncated, info, autoreset): ...
+    def collect(self, **kwargs: Any): ...
 
-    def log(self, mask):
+    def log(self, mask: ArrayLike | None = None) -> dict[str, float]:
         return {}
 
     def clear(self, mask: ArrayLike | None = None): ...
 
 
 class LogCollector(Collector):
-    """Collect and aggregate statistics for logging."""
+    """Collect and aggregate statistics for logging.
 
-    valid_targets = ["rewards", "steps"]
+    Args:
+        target: The target value to collect from the environment step
+        log_key: The key to use when logging the collected values
+        reduce: The reduction method to use. One of:
+            - "cnt": Count occurrences
+            - "sum": Sum values
+            - "mean": Average values
+    """
 
-    def __init__(self, target: str, log_key: str):
+    def __init__(self, target: str, log_key: str, reduce: str = "mean"):
         self._target = target
         self._log_key = log_key
-        self._log = {}
+        if reduce not in ["cnt", "sum", "mean"]:
+            raise ValueError(f"Invalid reduce method {reduce}")
+        self._reduce = reduce
+        self._cnt = None
+        self._log = None
         self._xp = None
 
-    def collect(self, obs, actions, next_obs, rewards, terminated, truncated, info, autoreset):
+    def collect(self, **kwargs: Any):
+        if self._target not in kwargs:
+            return
         if self._xp is None:
-            self._xp = array_namespace(rewards)
-        if self._target == "reward":
-            self._collect_reward(rewards)
-        elif self._target == "step":
-            if self._log_key not in self._log:
-                self._log[self._log_key] = self._xp.zeros_like(rewards)
-            self._log[self._log_key] += 1
-        else:
-            raise ValueError(f"Invalid target {self._target}")
+            self._xp = array_namespace(kwargs[self._target])
+        target_val = kwargs[self._target]
 
-    def log(self, mask):
+        # Initialize or update log based on reduction method
+        if self._log is None:
+            return self._init_log(target_val)
+        if self._reduce == "cnt":
+            self._log += 1
+        elif self._reduce == "mean":
+            self._log += target_val
+            self._cnt += 1
+        else:  # sum
+            self._log += target_val
+
+    def _init_log(self, target_val: ArrayLike):
+        if self._reduce == "cnt":
+            device = target_val.device
+            self._log = self._xp.zeros(len(target_val), device=device)
+        elif self._reduce == "mean":
+            n = 1 if target_val.ndim == 0 else len(target_val)
+            self._cnt = self._xp.zeros(n, device=target_val.device)
+            self._log = target_val
+        else:  # sum
+            self._log = target_val
+
+    def log(self, mask: ArrayLike | None = None) -> dict[str, float]:
         if self._log is None:
             return {}
-        return {k: float(self._xp.mean(v[mask])) for k, v in self._log.items()}
+        mask = mask if mask is not None else ...
+        if self._reduce == "cnt":
+            return {self._log_key: float(self._xp.mean(self._log[mask]))}
+        if self._reduce == "mean":
+            return {self._log_key: float(self._xp.mean(self._log[mask] / self._cnt[mask]))}
+        else:  # sum
+            return {self._log_key: float(self._xp.mean(self._log[mask]))}
 
     def clear(self, mask: ArrayLike | None = None):
-        for k in self._log:
-            self._log[k][mask if mask is not None else ...] = 0
+        if self._log is None:
+            return
+        mask = mask if mask is not None else ...
+        if self._reduce == "cnt":
+            self._log[mask] = 0
+        elif self._reduce == "mean":
+            self._log[mask] = 0
+            self._cnt[mask] = 0
+        else:  # sum
+            self._log[mask] = 0
 
-    def _collect_reward(self, rewards):
-        if self._log_key not in self._log:
-            self._log[self._log_key] = rewards
-        else:
-            self._log[self._log_key] += rewards
 
-
-class LogCollectorList(Collector):
+class CollectorList(Collector):
     """A list of LogCollectors that can be called together."""
 
     def __init__(self, collectors: list[LogCollector] | None = None):
@@ -234,13 +275,11 @@ class LogCollectorList(Collector):
         assert isinstance(collector, Collector)
         self._collectors.append(collector)
 
-    def collect(self, obs, actions, next_obs, rewards, terminated, truncated, info, autoreset):
+    def collect(self, **kwargs: Any):
         for collector in self._collectors:
-            collector.collect(
-                obs, actions, next_obs, rewards, terminated, truncated, info, autoreset
-            )
+            collector.collect(**kwargs)
 
-    def log(self, mask):
+    def log(self, mask: ArrayLike | None = None) -> dict[str, float]:
         logs = {}
         for collector in self._collectors:
             logs.update(collector.log(mask))

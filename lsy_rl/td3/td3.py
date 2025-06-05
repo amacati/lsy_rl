@@ -1,13 +1,13 @@
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Generator
 
-import numpy as np
 import torch
 from gymnasium.vector import VectorEnv
 from torch.optim import AdamW
 
-from lsy_rl.core.logger import EmptyLogger, Logger
+from lsy_rl.core.logger import Collector, CollectorList, EmptyLogger, LogCollector, Logger
 from lsy_rl.core.replay_buffer import VectorReplayBuffer
 from lsy_rl.core.transforms import IdentityTF, Transform
 from lsy_rl.td3.policy import TD3Actor, TD3Critic, TD3Policy
@@ -48,6 +48,9 @@ def td3(
     device: torch.device = torch.device("cpu"),
     checkpoint_path: Path | None = None,
     checkpoint_buffer: bool = False,
+    eval_collector: Collector | None = None,
+    train_collector: Collector | None = None,
+    rollout_collector: Collector | None = None,
     seed: int | None = None,
 ) -> TD3Policy:
     set_seeds(seed)
@@ -59,11 +62,22 @@ def td3(
     eval_action_tf.to(device=device)
     target_action_tf.to(device=device)
 
-    # Calculate log periods to limit the amount of logging
-    N_LOGS = 100
-    collect_samples_log_period = n_steps // N_LOGS
-    # Number of training calls * number of training iterations / number of logs
-    train_log_period = ((n_steps // train_period) * train_steps) // N_LOGS
+    if train_collector is None:
+        train_collector = CollectorList()
+        train_collector.append(LogCollector(target="actor_loss", log_key="train/actor_loss"))
+        train_collector.append(LogCollector(target="critic_loss", log_key="train/critic_loss"))
+    if rollout_collector is None:
+        rollout_collector = CollectorList()
+        rollout_collector.append(
+            LogCollector(target="reward", log_key="rollout/reward", reduce="sum")
+        )
+        rollout_collector.append(
+            LogCollector(target="reward", log_key="rollout/step", reduce="cnt")
+        )
+    if eval_collector is None:
+        eval_collector = CollectorList()
+        eval_collector.append(LogCollector(target="reward", log_key="eval/reward", reduce="sum"))
+        eval_collector.append(LogCollector(target="reward", log_key="eval/step", reduce="cnt"))
 
     if policy is None:
         obs_space = train_envs.single_observation_space
@@ -81,10 +95,10 @@ def td3(
             train_envs.num_envs, max_size=buffer_size, device=device, seed=seed
         )
 
-    train_info = {}
     n_train_steps = 0
     n_samples = 0
-    evaluate_policy(policy, eval_envs, eval_steps, obs_tf, action_tf, n_samples, logger, device)
+    logs = evaluate_policy(policy, eval_envs, eval_steps, obs_tf, action_tf, eval_collector, device)
+    logger.log(logs, step=n_samples)
     for n_samples, should_train, should_eval, should_checkpoint in collect_samples(
         policy=policy,
         env=train_envs,
@@ -95,13 +109,13 @@ def td3(
         train_period=train_period,
         eval_period=eval_period,
         checkpoint_period=checkpoint_period,
-        log_period=collect_samples_log_period,
+        collector=rollout_collector,
         train_min_samples=train_min_samples,
         logger=logger,
         device=device,
     ):
         if should_train:
-            train_info = train_policy(
+            train_policy(
                 policy=policy,
                 replay_buffer=replay_buffer,
                 steps=train_steps,
@@ -120,23 +134,16 @@ def td3(
                 target_action_tf=target_action_tf,
                 critic_optimizer=critic_optimizer,
                 actor_optimizer=actor_optimizer,
-                info=train_info,
+                collector=train_collector,
                 reward_clip=reward_clip,
-                log_period=train_log_period,
                 logger=logger,
             )
             n_train_steps += train_steps
         if should_eval:
-            evaluate_policy(
-                policy,
-                eval_envs,
-                eval_steps,
-                obs_tf,
-                eval_action_tf,
-                n_samples,
-                logger,
-                device=device,
+            log = evaluate_policy(
+                policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device=device
             )
+            logger.log(log, step=n_samples)
         if should_checkpoint and checkpoint_path is not None:
             checkpoint(
                 checkpoint_path,
@@ -173,7 +180,7 @@ def collect_samples(
     train_period: int,
     eval_period: int | None,
     checkpoint_period: int | None,
-    log_period: int,
+    collector: Collector,
     train_min_samples: int | None,
     logger: Logger,
     device: torch.device,
@@ -186,14 +193,10 @@ def collect_samples(
     """
     last_train = 0
     last_eval = 0
-    last_log = 0
     last_checkpoint = 0
     start_time = time.time()
-    log_info = {"ep_steps": 0, "ep_reward": 0, "n_episodes": 0, "last_rewards": []}
     n_samples = 0
-    steps = torch.zeros(env.num_envs, device=device)
-    rewards = torch.zeros(env.num_envs, device=device)
-    autoreset = False
+    autoreset = torch.zeros(env.num_envs, dtype=bool, device=device)
 
     obs = None
 
@@ -209,49 +212,48 @@ def collect_samples(
         action = policy.actor(obs_t)
         action = action_tf(action)
         next_obs, reward, terminated, truncated, info = env.step(action)
-        sample = tensordict_sample(
-            obs, action, next_obs, reward, terminated, truncated, info, device=device
+        collector.collect(
+            obs=obs,
+            action=action,
+            next_obs=next_obs,
+            reward=reward,
+            terminated=terminated,
+            truncated=truncated,
+            info=info,
+            autoreset=autoreset,
         )
-        obs = sample["next_obs"]
         done = terminated | truncated
 
-        # Vector environments automatically reset after T steps. This reset happens on the next
-        # step. The reset step produces an inconsistent (obs, next_obs) tuple that has to be
-        # discarded. To see how this is handled in gymnasium >= 1.0, see
+        # Vector environments automatically reset. This reset happens on the next step after done.
+        # The reset step produces an inconsistent (obs, next_obs) tuple that has to be discarded. To
+        # see how this is handled in gymnasium >= 1.0, see
         # https://github.com/Farama-Foundation/Gymnasium/releases/tag/v1.0.0.
-        if autoreset:
-            autoreset = torch.all(done)
-            continue
+        mask = ~autoreset
+        replay_buffer.add(
+            tensordict_sample(
+                obs, action, next_obs, reward, terminated, truncated, info, device=device
+            )[mask],
+            v_idx=torch.nonzero(mask).flatten(),
+        )
+        n_samples += mask.sum().item()
 
-        # TODO: Add support for variable rollout length
-        assert torch.all(done) or not torch.any(done), "Variable rollout length not supported"
-        replay_buffer.add(sample)
-        autoreset = torch.all(done)
+        if done.any():
+            logger.log(collector.log(done), step=n_samples)
+        if autoreset.any():
+            collector.clear(autoreset)
 
-        n_samples += env.num_envs
-        steps += 1
-        rewards += sample["reward"]
-        # If any of the environments are terminated or truncated, log the episode statistics
-        if torch.any(done):
-            log_info["n_episodes"] += len(done)
-            log_info["ep_steps"] += steps[done].sum()
-            log_info["ep_reward"] += rewards[done].sum()
-            log_info["last_rewards"].extend(sample["reward"][done].tolist())
-            steps[done] = 0
-            rewards[done] = 0
+        autoreset = done
+        obs = next_obs
 
-        # Logging
-        if n_samples - last_log >= log_period and log_info["n_episodes"] > 0:
-            log = {"rollout/ep_steps": log_info["ep_steps"] / log_info["n_episodes"]}
-            log["rollout/ep_reward"] = log_info["ep_reward"] / log_info["n_episodes"]
-            elapsed_time = time.time() - start_time
-            log["time/time_elapsed"] = elapsed_time
-            log["time/total_timesteps"] = n_samples
-            log["time/fps"] = n_samples / elapsed_time
-            logger.log(log, step=n_samples)
-            log_info["ep_steps"], log_info["ep_reward"], log_info["n_episodes"] = (0, 0, 0)
-            log_info["last_rewards"] = []
-            last_log = n_samples
+        elapsed_time = time.time() - start_time
+        logger.log(
+            {
+                "time/elapsed": elapsed_time,
+                "time/steps": n_samples,
+                "time/fps": n_samples / elapsed_time,
+            },
+            step=n_samples,
+        )
 
         train_condition = check_interrupt_sample(
             n_samples, last_train, period=train_period, min_samples=train_min_samples
@@ -289,22 +291,12 @@ def train_policy(
     target_action_tf: Transform,
     critic_optimizer: torch.optim.Optimizer,
     actor_optimizer: torch.optim.Optimizer,
-    info: dict,
-    log_period: int,
+    collector: Collector,
     reward_clip: tuple[float, float] | None,
     logger: Logger,
 ):
     """Train the policy using the collected samples in the replay buffer."""
     policy.train()  # Critic is always in train mode, not used for inference
-    if not info:
-        info = {
-            "summed_actor_loss": 0,
-            "summed_critic_loss": 0,
-            "actor_steps_since_log": 0,
-            "critic_steps_since_log": 0,
-            "n_train_steps": 0,
-            "last_log": 0,
-        }
 
     for _ in range(steps):
         # Update 'num_train_steps' at the beginning of the loop so that lower frequency updates
@@ -340,8 +332,7 @@ def train_policy(
             critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(policy.critic.parameters(), grad_clip)
             critic_optimizer.step()
-            info["summed_critic_loss"] += critic_loss.detach()
-            info["critic_steps_since_log"] += 1
+            collector.collect(critic_loss=critic_loss.detach())
 
         if n_train_steps % actor_period == 0:
             batch = replay_buffer.sample(batch_size)
@@ -356,8 +347,7 @@ def train_policy(
             actor_loss.backward()
             torch.nn.utils.clip_grad_norm_(policy.actor.parameters(), grad_clip)
             actor_optimizer.step()
-            info["summed_actor_loss"] += actor_loss.detach()
-            info["actor_steps_since_log"] += 1
+            collector.collect(actor_loss=actor_loss.detach())
 
         # Update the target networks
         if n_train_steps % actor_target_period == 0:
@@ -366,78 +356,55 @@ def train_policy(
             policy.critic.update_target(tau)
 
         # Log the training statistics
-        if n_train_steps - info["last_log"] >= log_period:
-            log = {}
-            info["last_log"] = n_train_steps
-            if info["actor_steps_since_log"] > 0:
-                log["train/actor_loss"] = info["summed_actor_loss"] / info["actor_steps_since_log"]
-                info["summed_actor_loss"], info["actor_steps_since_log"] = 0, 0
-            if info["critic_steps_since_log"] > 0:
-                log["train/critic_loss"] = (
-                    info["summed_critic_loss"] / info["critic_steps_since_log"]
-                )
-                info["summed_critic_loss"], info["critic_steps_since_log"] = 0, 0
-            if log:
-                logger.log(log, step=n_samples)
-
-    info["n_train_steps"] = n_train_steps
-    return info
+        if log := collector.log():
+            logger.log(log, step=n_samples)
+            collector.clear()
 
 
 @torch.no_grad()
 def evaluate_policy(
     policy: TD3Policy,
-    env: VectorEnv,
-    n_eval_steps: int,
+    envs: VectorEnv,
+    n_steps: int,
     obs_tf: Transform,
     action_tf: Transform,
-    n_samples: int,
-    logger: Logger,
+    collector: Collector,
     device: torch.device,
 ) -> dict[str, float]:
     """Evaluate the policy on the evaluation environment and log the results."""
+    obs, _ = envs.reset()
     policy.eval()
-    rewards = torch.zeros(env.num_envs, device=device)
-    steps = torch.zeros(env.num_envs, device=device)
-    all_rewards, ep_rewards, ep_steps, ep_last_rewards = [], [], [], []
-
-    obs, _ = env.reset()
-    autoreset = False
-    n = 0
-    while n < n_eval_steps:
-        obs_t = obs_tf(obs)
-        action = policy.action(obs_t)
-        action = action_tf(action)
-        next_obs, reward, terminated, truncated, info = env.step(action)
-        sample = tensordict_sample(
-            obs, action, next_obs, reward, terminated, truncated, info, device=device
+    collector.clear(mask=torch.ones(envs.num_envs, dtype=torch.bool))
+    autoreset = torch.zeros(envs.num_envs, dtype=bool, device=device)
+    logs = []
+    for _ in range(0, n_steps, envs.num_envs):
+        action = action_tf(policy.action(obs_tf(obs)))
+        next_obs, reward, terminated, truncated, info = envs.step(action)
+        collector.collect(
+            obs=obs,
+            action=action,
+            next_obs=next_obs,
+            reward=reward,
+            terminated=terminated,
+            truncated=truncated,
+            info=info,
+            autoreset=autoreset,
         )
-        obs = sample["next_obs"]
+        obs = next_obs
         done = terminated | truncated
-        if autoreset:  # As in rollout, we discard the reset step of the rollouts for the stats
-            autoreset = torch.all(done)
-            continue
-        autoreset = torch.all(done)
-
-        rewards += sample["reward"]
-        all_rewards += sample["reward"].tolist()
-        steps += 1
-
-        if torch.any(done):
-            ep_steps += steps[done].tolist()
-            ep_rewards += rewards[done].tolist()
-            ep_last_rewards += sample["reward"][done].tolist()
-            steps[done] = 0
-            rewards[done] = 0
-
-        n += env.num_envs
-
-    log = {"eval/mean_rewards": np.array(all_rewards).mean()}
-    if ep_rewards:
-        log["eval/ep_mean_rewards"] = np.array(ep_rewards).mean()
-        log["eval/ep_mean_steps"] = np.array(ep_steps).mean()
-        log["eval/mean_last_reward"] = np.array(ep_last_rewards).mean()
-    logger.log(log, step=n_samples)
+        if done.any():
+            logs.append(collector.log(done))
+        if autoreset.any():
+            collector.clear(autoreset)
+        autoreset = done
+        obs = next_obs
+    # Average over all metrics
+    avg_log = defaultdict(list)
+    for log in logs:
+        for k, v in log.items():
+            avg_log[k].append(v)
+    avg_log = {k: sum(v) / len(v) for k, v in avg_log.items()}
+    return avg_log
 
 
 def check_interrupt_sample(
