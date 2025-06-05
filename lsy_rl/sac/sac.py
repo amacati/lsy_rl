@@ -59,7 +59,7 @@ def sac(
     logger: Logger = EmptyLogger(),
     policy: SACPolicy | None = None,
     seed: int | None = None,
-):
+) -> SACPolicy:
     set_seeds(seed)
     assert train_envs is not eval_envs, "Train and eval environments must be different"
 

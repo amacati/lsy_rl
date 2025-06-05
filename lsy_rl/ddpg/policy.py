@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -9,6 +9,9 @@ from torch import FloatTensor
 
 from lsy_rl.core.policy import Policy
 from lsy_rl.utils import polyak_update_
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class DDPGActor(nn.Module):
@@ -25,10 +28,10 @@ class DDPGActor(nn.Module):
         self.target_network = DDPGActorNetwork(obs_dim, action_dim)
         self.target_network.load_state_dict(self.network.state_dict())
 
-    def forward(self, obs):
+    def forward(self, obs: FloatTensor) -> FloatTensor:
         return self.network(obs)
 
-    def target(self, obs):
+    def target(self, obs: FloatTensor) -> FloatTensor:
         return self.target_network(obs)
 
     def update_target(self, tau: float):
@@ -73,10 +76,10 @@ class DDPGCritic(nn.Module):
         self.target_network = DDPGCriticNetwork(obs_dim + action_dim)
         self.target_network.load_state_dict(self.network.state_dict())
 
-    def forward(self, obs: FloatTensor, action: FloatTensor):
+    def forward(self, obs: FloatTensor, action: FloatTensor) -> FloatTensor:
         return self.network(torch.cat([obs, action], dim=-1))
 
-    def target(self, obs: FloatTensor, action: FloatTensor):
+    def target(self, obs: FloatTensor, action: FloatTensor) -> FloatTensor:
         assert obs.dtype == torch.float32, f"Invalid dtype {obs.dtype}"
         assert action.dtype == torch.float32, f"Invalid dtype {action.dtype}"
         return self.target_network(torch.cat([obs, action], dim=-1))

@@ -18,12 +18,10 @@ class Noise(torch.nn.Module, ABC):
         super().__init__()
         self.params = nn.ParameterDict()
 
-    def reset(self):
-        ...
+    def reset(self): ...
 
     @abstractmethod
-    def __call__(self, x: Tensor) -> Tensor:
-        ...
+    def __call__(self, x: Tensor) -> Tensor: ...
 
 
 class UniformNoise(Noise):
@@ -35,7 +33,7 @@ class UniformNoise(Noise):
         self.params["min"] = nn.Parameter(min, requires_grad=False)
         self.params["diff"] = nn.Parameter(max - min, requires_grad=False)
 
-    def __call__(self, x: Tensor):
+    def __call__(self, x: Tensor) -> Tensor:
         assert isinstance(x, Tensor), "Input must be a Tensor"
         return torch.rand(x.shape, device=x.device) * self.params["diff"] + self.params["min"]
 
@@ -49,7 +47,7 @@ class NormalNoise(Noise):
         self.params["mean"] = nn.Parameter(mean, requires_grad=False)
         self.params["std"] = nn.Parameter(std, requires_grad=False)
 
-    def __call__(self, x: Tensor):
+    def __call__(self, x: Tensor) -> Tensor:
         assert isinstance(x, Tensor), "Input must be a Tensor"
         x = torch.randn(x.shape, device=x.device) * self.params["std"] + self.params["mean"]
         return x
@@ -77,7 +75,7 @@ class ClippedNormalNoise(Noise):
         self.params["c_low"] = nn.Parameter(c_low, requires_grad=False)
         self.params["c_high"] = nn.Parameter(c_high, requires_grad=False)
 
-    def __call__(self, x: Tensor):
+    def __call__(self, x: Tensor) -> Tensor:
         assert isinstance(x, Tensor), "Input must be a Tensor"
         x = torch.randn(x.shape, device=x.device) * self.params["std"] + self.params["mean"]
         x = torch.clamp(x, self.params["c_low"], self.params["c_high"])
@@ -93,7 +91,7 @@ class EpsilonNoise(Noise):
         eps = torch.tensor(epsilon, dtype=torch.float32)
         self.params["epsilon"] = nn.Parameter(eps, requires_grad=False)
 
-    def __call__(self, x: Tensor):
+    def __call__(self, x: Tensor) -> Tensor:
         choice = torch.rand(x.shape[0], device=x.device) < self.params["epsilon"]
         return torch.where(choice[:, None], self.params["noise"](x), 0)
 
@@ -102,7 +100,7 @@ class ZeroNoise(Noise):
     def __init__(self):
         super().__init__()
 
-    def __call__(self, x: Tensor):
+    def __call__(self, x: Tensor) -> Tensor:
         return torch.zeros_like(x)
 
 
@@ -119,7 +117,7 @@ class HybridNoise(Noise):
         self.params["noise"] = nn.ModuleList(noise)
         self.params["prob"] = nn.Parameter(prob, requires_grad=False)
 
-    def __call__(self, x: Tensor):
+    def __call__(self, x: Tensor) -> Tensor:
         noise_idx = torch.multinomial(self.params["prob"], x.shape[0], replacement=True)
         noise = torch.zeros_like(x)
         for i, noise_idx in enumerate(noise_idx):

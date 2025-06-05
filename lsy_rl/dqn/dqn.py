@@ -39,7 +39,7 @@ class DQN(Algorithm):
         # multi-discrete for vectorized environments, and we only support vectorized environments
         if not isinstance(self.env.action_space, spaces.MultiDiscrete):
             raise TypeError(
-                ("The action space must be multi-discrete, is type " f"{self.env.action_space}.")
+                (f"The action space must be multi-discrete, is type {self.env.action_space}.")
             )
         assert all(nvec == self.env.action_space.nvec[0] for nvec in self.env.action_space.nvec)
         self.logger = logger
@@ -77,12 +77,12 @@ class DQN(Algorithm):
         self.checkpoint_info = {"num_samples": 0}
 
     @property
-    def stop_condition(self):
+    def stop_condition(self) -> bool:
         max_samples = self.rollout_info["num_samples"] >= self.config.rollout.max_samples
         return max_samples
 
     @property
-    def train_condition(self):
+    def train_condition(self) -> bool:
         if self.rollout_info["num_samples"] < self.config.train.batch_size:
             return False
         num_samples = self.rollout_info["num_samples"] - self.train_info["num_samples"]
@@ -91,12 +91,12 @@ class DQN(Algorithm):
         return False
 
     @property
-    def eval_condition(self):
+    def eval_condition(self) -> bool:
         num_samples = self.rollout_info["num_samples"] - self.eval_info["num_samples"]
         return num_samples >= self.config.eval.period
 
     @property
-    def checkpoint_condition(self):
+    def checkpoint_condition(self) -> bool:
         if self.config.checkpoint.period is None:
             return False
         num_samples = self.rollout_info["num_samples"] - self.checkpoint_info["num_samples"]
@@ -118,7 +118,7 @@ class DQN(Algorithm):
         self.policy.dqn.eval()
 
         # If first rollout, reset the environment
-        if not "obs" in self.rollout_info:
+        if "obs" not in self.rollout_info:
             self.rollout_info["obs"], _ = self.env.reset()
         obs = self.rollout_info["obs"]
 
@@ -211,7 +211,7 @@ class DQN(Algorithm):
         self.buffer.save(self.config.checkpoint.path / "buffer.pt")
         self.checkpoint_info["num_samples"] = self.rollout_info["num_samples"]
 
-    def _next_required_samples(self):
+    def _next_required_samples(self) -> int:
         # Calculate required samples for next training step
         current_samples = self.rollout_info["num_samples"] - self.train_info["num_samples"]
         train_samples = self.config.train.period - current_samples
@@ -271,7 +271,7 @@ class DQN(Algorithm):
         if checkpoint_config.period is not None:
             if checkpoint_config.period is None:
                 raise ValueError(
-                    "If 'checkpoint_period' is not None, 'checkpoint_path' must be " "specified."
+                    "If 'checkpoint_period' is not None, 'checkpoint_path' must be specified."
                 )
             if not checkpoint_config.period % env_config.kwargs["num_envs"] == 0:
                 raise ValueError(

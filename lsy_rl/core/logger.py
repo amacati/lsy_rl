@@ -117,7 +117,7 @@ class MemLogger(Logger):
         self._log = dict()
 
     @property
-    def data(self):
+    def data(self) -> dict:
         return self._log
 
     def log(self, data: dict, step: int, flush: bool = False):
@@ -154,7 +154,7 @@ class FileLogger(Logger):
     def stop(self):
         self.flush()
 
-    def jsonify(self, data: dict):
+    def jsonify(self, data: dict) -> dict:
         for key, value in data.items():
             if isinstance(value, Mapping):
                 data[key] = self.jsonify(value)
@@ -171,7 +171,7 @@ class WandBLogger(Logger):
         assert wandb.run is not None, "WandB must be initialized before creating a WandBLogger"
         self.run = wandb.run
 
-    def log(self, data, step: int, flush: bool = False):
+    def log(self, data: dict, step: int, flush: bool = False):
         data = self.filter(data)
         data = self.rate_limit(data, step)
         self.run.log(data, step=step, commit=flush)
@@ -211,7 +211,7 @@ class LogCollector(Collector):
         self._log = None
         self._xp = None
 
-    def collect(self, **kwargs: Any):
+    def collect(self, **kwargs: Any) -> None:
         if self._target not in kwargs:
             return
         if self._xp is None:
@@ -289,5 +289,5 @@ class CollectorList(Collector):
         for collector in self._collectors:
             collector.clear(mask)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Collector:
         return self._collectors[idx]

@@ -69,10 +69,11 @@ indent-width = 4
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I", "D", "TCH", "ANN"]
-ignore = ["ANN101", "ANN401"]
+select = ["E4", "E7", "E9", "F", "I", "TCH", "ANN"]
+ignore = ["ANN401"]
 fixable = ["ALL"]
 unfixable = []
+per-file-ignores = { "tests/**.py" = ["D", "ANN"] }
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

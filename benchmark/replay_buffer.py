@@ -11,7 +11,7 @@ max_size = 100_000
 device = torch.device("cpu")
 
 
-def create_sample():
+def create_sample() -> TensorDict:
     obs = TensorDict(
         {
             "achieved_goal": torch.randn(num_envs, 10),
@@ -36,7 +36,7 @@ def create_sample():
     return sample
 
 
-def reward_fn(x, y):
+def reward_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return torch.ones(x.shape[0], 1)
 
 
