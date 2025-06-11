@@ -236,9 +236,9 @@ class LogCollector(Collector):
         elif self._reduce == "mean":
             n = 1 if target_val.ndim == 0 else len(target_val)
             self._cnt = self._xp.zeros(n, device=target_val.device)
-            self._log = target_val
+            self._log = self._xp.zeros_like(target_val)
         else:  # sum
-            self._log = target_val
+            self._log = self._xp.zeros_like(target_val)
 
     def log(self, mask: ArrayLike | None = None) -> dict[str, float]:
         if self._log is None:
