@@ -5,7 +5,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from lsy_rl.core.policy import Policy
-
+from lsy_rl.utils import polyak_update_
 
 class SACActor(nn.Module):
     def __init__(self, obs_shape: tuple[int, ...], action_shape: tuple[int, ...]):
@@ -14,7 +14,7 @@ class SACActor(nn.Module):
         assert isinstance(action_shape, tuple), "action_shape must be a tuple"
         self.network = SACActorNet(obs_shape, action_shape)
 
-    def action(self, obs: Tensor) -> Tensor:
+    def action(self, obs: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         mean, logstd = self.network(obs)
         normal = torch.distributions.Normal(mean, logstd.exp())
         x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1))
@@ -82,7 +82,22 @@ class SACCritic(nn.Module):
             param.requires_grad = False
         self.q1_target.load_state_dict(self.q1.state_dict())
         self.q2_target.load_state_dict(self.q2.state_dict())
-
+    
+    def values(self, obs: Tensor, action: Tensor) -> tuple[Tensor, Tensor]:
+        x = torch.cat([obs, action], dim=-1)
+        return self.q1(x), self.q2(x)
+    
+    def actor_value(self, obs: Tensor, action: Tensor) -> Tensor:
+        x = torch.cat([obs, action], dim=-1)
+        return torch.minimum(self.q1(x), self.q2(x))
+    
+    def target(self, obs: Tensor, action: Tensor) -> Tensor:
+        x = torch.cat([obs, action], dim=-1)
+        return torch.minimum(self.q1_target(x), self.q2_target(x))
+    
+    def update_target(self, tau: float):
+        polyak_update_(self.q1_target, self.q1, tau)
+        polyak_update_(self.q2_target, self.q2, tau)
 
 class SACCriticNet(nn.Module):
     def __init__(self, obs_shape: tuple[int, ...], action_shape: tuple[int, ...]):
@@ -98,8 +113,8 @@ class SACCriticNet(nn.Module):
             }
         )
 
-    def forward(self, obs: Tensor, action: Tensor) -> Tensor:
-        x = torch.cat([obs, action], dim=-1)
+    def forward(self, obs_action: Tensor) -> Tensor:
+        x = obs_action
         for layer in self.network.values():
             x = layer(x)
         return x

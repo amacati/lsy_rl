@@ -12,7 +12,7 @@ from lsy_rl.core.logger import Collector, CollectorList, EmptyLogger, LogCollect
 from lsy_rl.core.replay_buffer import VectorReplayBuffer
 from lsy_rl.sac.policy import SACActor, SACCritic, SACPolicy
 from lsy_rl.utils import polyak_update_
-from lsy_rl.utils.utils import set_seeds, sync_env_normalization
+from lsy_rl.utils.utils import set_seeds, sync_env_normalization, tensordict_sample
 
 
 @torch.no_grad()
@@ -111,9 +111,7 @@ def sac(
         policy = SACPolicy(actor, critic)
     policy.to(device)
 
-    q1, q2 = policy.critic.q1, policy.critic.q2
     critic_optim = AdamW(policy.critic.parameters(), lr=critic_lr)  # Targets are frozen
-    q1_target, q2_target = policy.critic.q1_target, policy.critic.q2_target
     actor_optim = AdamW(policy.actor.parameters(), lr=actor_lr)
 
     # Automatic entropy tuning
@@ -157,16 +155,9 @@ def sac(
 
         mask = ~autoreset
         replay_buffer.add(
-            TensorDict(
-                {
-                    "obs": obs[mask],
-                    "action": action[mask],
-                    "next_obs": next_obs[mask],
-                    "reward": reward[mask],
-                    "terminated": terminated[mask].float(),
-                },
-                batch_size=mask.sum().item(),
-            ),
+            tensordict_sample(
+                obs, action, next_obs, reward, terminated, truncated, info, device=device
+            )[mask],
             v_idx=torch.nonzero(mask).flatten(),
         )
         n_samples += mask.sum().item()
@@ -189,17 +180,14 @@ def sac(
                 data = replay_buffer.sample(batch_size)
                 with torch.no_grad():
                     next_state_actions, next_state_log_pi, _ = policy.actor.action(data["next_obs"])
-                    q1_next_target = q1_target(data["next_obs"], next_state_actions)
-                    q2_next_target = q2_target(data["next_obs"], next_state_actions)
-                    min_qf_next_target = (
-                        torch.min(q1_next_target, q2_next_target) - alpha * next_state_log_pi
-                    )
-                    next_q_value = data["reward"].flatten() + (
-                        1 - data["terminated"].flatten()
-                    ) * gamma * (min_qf_next_target).view(-1)
+                    min_qf_next_target = policy.critic.target(data["next_obs"], next_state_actions)
+                    min_qf_next_target -= alpha * next_state_log_pi
+                    next_q_value = data["reward"].flatten() + \
+                        ~data["terminated"].flatten() * \
+                        gamma * (min_qf_next_target).view(-1)
 
-                q1_a_values = q1(data["obs"], data["action"]).view(-1)
-                q2_a_values = q2(data["obs"], data["action"]).view(-1)
+                q1_a_values, q2_a_values = policy.critic.values(data["obs"], data["action"])
+                q1_a_values, q2_a_values = q1_a_values.view(-1), q2_a_values.view(-1)
                 q1_loss = F.mse_loss(q1_a_values, next_q_value)
                 q2_loss = F.mse_loss(q2_a_values, next_q_value)
                 qf_loss = q1_loss + q2_loss
@@ -217,9 +205,7 @@ def sac(
                 for _ in range(actor_period):
                     data = replay_buffer.sample(batch_size)
                     pi, log_pi, _ = policy.actor.action(data["obs"])
-                    q1_pi = q1(data["obs"], pi)
-                    q2_pi = q2(data["obs"], pi)
-                    min_qf_pi = torch.min(q1_pi, q2_pi)
+                    min_qf_pi = policy.critic.actor_value(data["obs"], pi)
                     actor_loss = ((alpha * log_pi) - min_qf_pi).mean()
 
                     actor_optim.zero_grad()
@@ -241,8 +227,7 @@ def sac(
             # Update the target networks
             if n_samples - last_target >= target_period:
                 last_target = n_samples
-                polyak_update_(q1_target, q1, tau)
-                polyak_update_(q2_target, q2, tau)
+                policy.critic.update_target(tau)
 
             if log := train_collector.log():
                 logger.log(log, step=n_samples)
