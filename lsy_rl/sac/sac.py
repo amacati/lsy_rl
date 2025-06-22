@@ -1,5 +1,6 @@
 import time
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -10,22 +11,30 @@ from torch.optim import AdamW
 
 from lsy_rl.core.logger import Collector, CollectorList, EmptyLogger, LogCollector, Logger
 from lsy_rl.core.replay_buffer import VectorReplayBuffer
+from lsy_rl.core.transforms import IdentityTF, Transform
 from lsy_rl.sac.policy import SACActor, SACCritic, SACPolicy
-from lsy_rl.utils import polyak_update_
-from lsy_rl.utils.utils import set_seeds, sync_env_normalization, tensordict_sample
-
+from lsy_rl.utils.utils import set_seeds, tensordict_sample
+# TODO: Should probably move these functions to utils
+from lsy_rl.td3.td3 import check_interrupt_sample, checkpoint
 
 @torch.no_grad()
 def evaluate_agent(
-    policy: SACPolicy, envs: VectorEnv, n_steps: int, collector: Collector, device: torch.device
+    policy: SACPolicy, 
+    envs: VectorEnv, 
+    n_steps: int, 
+    obs_tf: Transform, 
+    action_tf: Transform, 
+    collector: Collector, 
+    device: torch.device
 ) -> dict[str, float]:
+    """Evaluate the policy on the evaluation environment and log the results."""
     obs, _ = envs.reset()
     policy.eval()
     collector.clear()
     autoreset = torch.zeros(envs.num_envs, dtype=bool, device=device)
     logs = []
     for _ in range(0, n_steps, envs.num_envs):
-        action = policy.actor.mean_action(obs)
+        action = action_tf(policy.actor.mean_action(obs_tf(obs)))
         next_obs, reward, terminated, truncated, info = envs.step(action)
         collector.collect(
             obs=obs,
@@ -62,19 +71,30 @@ def sac(
     critic_lr: float,
     replay_buffer: VectorReplayBuffer | None = None,
     buffer_size: int = 1_000_000,
+    eps: float = 1e-8,
+    train_period: int = 1,
+    train_steps: int = 1,
     actor_period: int = 1,
     critic_period: int = 1,
     target_period: int = 1,
     tau: float = 0.005,
     gamma: float = 0.99,
+    grad_clip: float | None = None,
     batch_size: int = 256,
     eval_period: int | None = None,
     eval_steps: int = 1000,
+    checkpoint_period: int | None = None,
     alpha: float = 0.2,
     autotune_alpha: bool = False,
     alpha_lr: float = 3e-4,
     learning_starts: int = 0,
     policy: SACPolicy | None = None,
+    obs_tf: Transform = IdentityTF(),
+    action_tf: Transform = IdentityTF(),
+    train_action_tf: Transform = IdentityTF(),
+    eval_action_tf: Transform = IdentityTF(),
+    checkpoint_path: Path | None = None,
+    checkpoint_buffer: bool = False,
     logger: Logger = EmptyLogger(),
     device: torch.device = torch.device("cpu"),
     eval_collector: Collector | None = None,
@@ -84,7 +104,12 @@ def sac(
 ) -> SACPolicy:
     set_seeds(seed)
     assert train_envs is not eval_envs, "Train and eval environments must be different"
-
+    # Move all transforms to the correct device
+    obs_tf.to(device=device)
+    action_tf.to(device=device)
+    train_action_tf.to(device=device)
+    eval_action_tf.to(device=device)
+    
     if train_collector is None:
         train_collector = CollectorList()
         train_collector.append(LogCollector(target="actor_loss", log_key="train/actor_loss"))
@@ -111,8 +136,8 @@ def sac(
         policy = SACPolicy(actor, critic)
     policy.to(device)
 
-    critic_optim = AdamW(policy.critic.parameters(), lr=critic_lr)  # Targets are frozen
-    actor_optim = AdamW(policy.actor.parameters(), lr=actor_lr)
+    critic_optim = AdamW(policy.critic.parameters(), lr=critic_lr, eps=eps)  # Targets are frozen
+    actor_optim = AdamW(policy.actor.parameters(), lr=actor_lr, eps=eps)
 
     # Automatic entropy tuning
     if autotune_alpha:
@@ -128,18 +153,27 @@ def sac(
         )
 
     # Stats tracking setup
+    n_train_steps = 0
     n_samples = 0
-    last_train_actor, last_train_critic, last_target = 0, 0, 0
+    last_train = 0
     last_eval = 0
+    last_checkpoint = 0
     autoreset = torch.zeros(train_envs.num_envs, dtype=bool, device=device)
+
+    # Establish an initial baseline
+    log = evaluate_agent(
+        policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device
+    )
+    logger.log(log, step=n_samples)        
 
     obs, _ = train_envs.reset(seed=seed)
 
     while n_samples < n_steps:
         # Sample data
-        policy.train()
+        obs_tf.update(obs)
         with torch.no_grad():
-            action, _, _ = policy.actor.action(obs)
+            action, _, _ = policy.actor.action(obs_tf(obs))
+        action = action_tf(action)
         next_obs, reward, terminated, truncated, info = train_envs.step(action)
         rollout_collector.collect(
             obs=obs,
@@ -153,6 +187,10 @@ def sac(
         )
         done = terminated | truncated
 
+        # Vector environments automatically reset. This reset happens on the next step after done.
+        # The reset step produces an inconsistent (obs, next_obs) tuple that has to be discarded. To
+        # see how this is handled in gymnasium >= 1.0, see
+        # https://github.com/Farama-Foundation/Gymnasium/releases/tag/v1.0.0.
         mask = ~autoreset
         replay_buffer.add(
             tensordict_sample(
@@ -172,50 +210,61 @@ def sac(
         obs = next_obs
 
         # Training.
-        if n_samples > learning_starts:
+        train_condition = check_interrupt_sample(
+            n_samples, last_train, period=train_period, min_samples=learning_starts
+        )
+        if train_condition:
             tstart = time.perf_counter()
             policy.train()
-            if n_samples - last_train_critic >= critic_period:
-                last_train_critic = n_samples
-                data = replay_buffer.sample(batch_size)
-                with torch.no_grad():
-                    next_state_actions, next_state_log_pi, _ = policy.actor.action(data["next_obs"])
-                    min_qf_next_target = policy.critic.target(data["next_obs"], next_state_actions)
-                    min_qf_next_target -= alpha * next_state_log_pi
-                    next_q_value = data["reward"].flatten() + \
-                        ~data["terminated"].flatten() * \
-                        gamma * (min_qf_next_target).view(-1)
-
-                q1_a_values, q2_a_values = policy.critic.values(data["obs"], data["action"])
-                q1_a_values, q2_a_values = q1_a_values.view(-1), q2_a_values.view(-1)
-                q1_loss = F.mse_loss(q1_a_values, next_q_value)
-                q2_loss = F.mse_loss(q2_a_values, next_q_value)
-                qf_loss = q1_loss + q2_loss
-                train_collector.collect(critic_loss=qf_loss.detach())
-
-                # optimize the model
-                critic_optim.zero_grad()
-                qf_loss.backward()
-                critic_optim.step()
-
-            if n_samples - last_train_actor >= actor_period:  # TD 3 Delayed update support
-                last_train_actor = n_samples
-                # compensate for the delay by doing 'actor_update_interval' instead of 1
-                # TODO: Really? TD3 does not do this
-                for _ in range(actor_period):
+            last_train = n_samples
+            for _ in range(train_steps):
+                n_train_steps += 1
+                
+                if n_train_steps % critic_period == 0:
                     data = replay_buffer.sample(batch_size)
-                    pi, log_pi, _ = policy.actor.action(data["obs"])
-                    min_qf_pi = policy.critic.actor_value(data["obs"], pi)
+                    with torch.no_grad():
+                        next_obs_t = obs_tf(data["next_obs"])
+                        next_state_actions, next_state_log_pi, _ = policy.actor.action(next_obs_t)
+                        next_state_actions = train_action_tf(next_state_actions)
+                        min_qf_next_target = policy.critic.target(next_obs_t, next_state_actions)
+                        min_qf_next_target -= alpha * next_state_log_pi
+                        next_q_value = data["reward"].flatten() + \
+                            ~data["terminated"].flatten() * \
+                            gamma * (min_qf_next_target).view(-1)
+
+                    obs_t = obs_tf(data["obs"])
+                    q1_a_values, q2_a_values = policy.critic.values(obs_t, data["action"])
+                    q1_a_values, q2_a_values = q1_a_values.view(-1), q2_a_values.view(-1)
+                    q1_loss = F.mse_loss(q1_a_values, next_q_value)
+                    q2_loss = F.mse_loss(q2_a_values, next_q_value)
+                    qf_loss = q1_loss + q2_loss
+
+                    # optimize the model
+                    critic_optim.zero_grad()
+                    qf_loss.backward()
+                    if grad_clip is not None:
+                        torch.nn.utils.clip_grad_norm_(policy.critic.parameters(), grad_clip)
+                    critic_optim.step()
+                    train_collector.collect(critic_loss=qf_loss.detach())
+
+                if n_train_steps % actor_period == 0:
+                    data = replay_buffer.sample(batch_size)
+                    obs_t = obs_tf(data["obs"])
+                    pi, log_pi, _ = policy.actor.action(obs_t)
+                    pi = train_action_tf(pi)
+                    min_qf_pi = policy.critic.actor_value(obs_t, pi)
                     actor_loss = ((alpha * log_pi) - min_qf_pi).mean()
 
                     actor_optim.zero_grad()
                     actor_loss.backward()
+                    if grad_clip is not None:
+                        torch.nn.utils.clip_grad_norm_(policy.actor.parameters(), grad_clip)
                     actor_optim.step()
                     train_collector.collect(actor_loss=actor_loss.detach())
 
                     if autotune_alpha:
                         with torch.no_grad():
-                            _, log_pi, _ = policy.actor.action(data["obs"])
+                            _, log_pi, _ = policy.actor.action(obs_t)
                         alpha_loss = (-log_alpha.exp() * (log_pi + target_entropy)).mean()
 
                         alpha_optim.zero_grad()
@@ -224,23 +273,55 @@ def sac(
                         alpha = log_alpha.exp().item()
                         train_collector.collect(alpha_loss=alpha_loss.detach())
 
-            # Update the target networks
-            if n_samples - last_target >= target_period:
-                last_target = n_samples
-                policy.critic.update_target(tau)
+                # Update the target networks
+                if n_train_steps % target_period == 0:
+                    policy.critic.update_target(tau)
 
             if log := train_collector.log():
                 logger.log(log, step=n_samples)
                 train_collector.clear()
+            policy.eval()
             logger.log({"time/train": time.perf_counter() - tstart}, step=n_samples)
 
         # Evaluate the agent
-        if n_samples - last_eval >= eval_period:
+        eval_condition = check_interrupt_sample(n_samples, last_eval, period=eval_period)
+        if eval_condition:
             tstart = time.perf_counter()
             last_eval = n_samples
-            sync_env_normalization(train_envs, eval_envs)
-            log = evaluate_agent(policy, eval_envs, eval_steps, eval_collector, device)
+            log = evaluate_agent(
+                policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device
+            )
             logger.log(log, step=n_samples)
             logger.log({"time/eval": time.perf_counter() - tstart}, step=n_samples)
+        
+        # Save training checkpoint
+        checkpoint_condition = check_interrupt_sample(
+            n_samples, last_checkpoint, period=checkpoint_period
+        )
+        if checkpoint_condition and checkpoint_path is not None:
+            tstart = time.perf_counter()
+            last_checkpoint = n_samples
+            checkpoint(
+                checkpoint_path, 
+                policy,
+                replay_buffer, 
+                critic_optim,
+                actor_optim, 
+                obs_tf, 
+                checkpoint_buffer
+            )
+            logger.log({"time/checkpoint": time.perf_counter() - tstart}, step=n_samples)
+    
+    # Save final checkpoint
+    if checkpoint_path is not None:
+        checkpoint(
+            checkpoint_path, 
+            policy,
+            replay_buffer, 
+            critic_optim,
+            actor_optim, 
+            obs_tf, 
+            checkpoint_buffer
+        )
     logger.flush()
     return policy

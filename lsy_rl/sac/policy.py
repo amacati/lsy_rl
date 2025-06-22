@@ -1,4 +1,5 @@
 from __future__ import annotations
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -47,6 +48,8 @@ class SACActorNet(nn.Module):
                 "f_in": nn.ReLU(),
                 "hidden1": nn.Linear(256, 256),
                 "f_hidden1": nn.ReLU(),
+                "hidden2": nn.Linear(256, 256),
+                "f_hidden2": nn.ReLU(),
             }
         )
         self.mean_head = nn.ModuleDict({"mean": nn.Linear(256, torch.tensor(action_shape).prod())})
@@ -109,6 +112,8 @@ class SACCriticNet(nn.Module):
                 "f_input": nn.ReLU(),
                 "hidden1": nn.Linear(256, 256),
                 "f_hidden1": nn.ReLU(),
+                "hidden2": nn.Linear(256, 256),
+                "f_hidden2": nn.ReLU(),
                 "output": nn.Linear(256, 1),
             }
         )
@@ -128,3 +133,12 @@ class SACPolicy(Policy, nn.Module):
 
     def action(self, obs: Tensor) -> Tensor:
         return self.actor.mean(obs)
+    
+    def save(self, path: Path):
+        save_dict = {"actor": self.actor.state_dict(), "critic": self.critic.state_dict()}
+        torch.save(save_dict, path)
+
+    def load(self, path: Path):
+        save_dict = torch.load(path, weights_only=True)
+        self.actor.load_state_dict(save_dict["actor"])
+        self.critic.load_state_dict(save_dict["critic"])
