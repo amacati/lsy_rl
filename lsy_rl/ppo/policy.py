@@ -1,4 +1,5 @@
 from __future__ import annotations
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -99,3 +100,12 @@ class PPOPolicy(Policy, nn.Module):
 
     def value(self, obs: Tensor) -> Tensor:
         return self.critic(obs)
+    
+    def save(self, path: Path):
+        save_dict = {"actor": self.actor.state_dict(), "critic": self.critic.state_dict()}
+        torch.save(save_dict, path)
+
+    def load(self, path: Path):
+        save_dict = torch.load(path, weights_only=True)
+        self.actor.load_state_dict(save_dict["actor"])
+        self.critic.load_state_dict(save_dict["critic"])

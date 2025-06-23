@@ -1,5 +1,6 @@
 import time
 import warnings
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -10,14 +11,18 @@ from torch.optim import AdamW
 
 from lsy_rl.core.logger import Collector, CollectorList, EmptyLogger, LogCollector, Logger
 from lsy_rl.core.replay_buffer import TrajectoryBuffer
+from lsy_rl.core.transforms import IdentityTF, Transform
 from lsy_rl.ppo.policy import PPOActor, PPOCritic, PPOPolicy
-from lsy_rl.utils.utils import set_seeds, sync_env_normalization
-
+from lsy_rl.utils.utils import set_seeds
+# TODO: Should probably move these functions to utils
+from lsy_rl.td3.td3 import check_interrupt_sample, checkpoint
 
 def evaluate_agent(
     envs: VectorEnv,
     policy: PPOPolicy,
     n_steps: int,
+    obs_tf: Transform, 
+    action_tf: Transform, 
     device: str,
     collector: Collector,
     seed: int | None = None,
@@ -28,7 +33,8 @@ def evaluate_agent(
     logs = []  # All eval logs are at the same global step, so we average
     for _ in range(0, n_steps, envs.num_envs):
         with torch.no_grad():
-            action, _, _, _ = policy.action_and_value(obs, deterministic=True)
+            action, _, _, _ = policy.action_and_value(obs_tf(obs), deterministic=True)
+        action = action_tf(action)
         next_obs, reward, terminated, truncated, info = envs.step(action)
         collector.collect(
             obs=obs,
@@ -67,6 +73,8 @@ def ppo(
     actor_lr: float,
     critic_lr: float,
     eval_period: int,
+    checkpoint_period: int | None = None,
+    eps: float = 1e-5,
     clip_coef: float = 0.2,
     ent_coef: float = 0.01,
     vf_coef: float = 0.5,
@@ -81,6 +89,10 @@ def ppo(
     device: torch.device = torch.device("cpu"),
     logger: Logger = EmptyLogger(),
     agent: PPOPolicy | None = None,
+    obs_tf: Transform = IdentityTF(),
+    action_tf: Transform = IdentityTF(),
+    eval_action_tf: Transform = IdentityTF(),
+    checkpoint_path: Path | None = None,
     rollout_log_collector: Collector | None = None,
     eval_log_collector: Collector | None = None,
     seed: int | None = None,
@@ -89,6 +101,10 @@ def ppo(
     assert train_envs is not eval_envs, "Train and eval environments must be different"
     if target_kl is not None and target_kl < 0:
         target_kl = None
+    # Move all transforms to the correct device
+    obs_tf.to(device=device)
+    action_tf.to(device=device)
+    eval_action_tf.to(device=device)
 
     # Calculate necessary parameters from the configured parameters
     n_envs = train_envs.num_envs
@@ -110,15 +126,15 @@ def ppo(
         critic = PPOCritic(obs_shape)
         agent = PPOPolicy(actor, critic)
     agent.to(device)
-    actor_optim = AdamW(agent.actor.parameters(), lr=actor_lr, eps=1e-5)
-    critic_optim = AdamW(agent.critic.parameters(), lr=critic_lr, eps=1e-5)
+    actor_optim = AdamW(agent.actor.parameters(), lr=actor_lr, eps=eps)
+    critic_optim = AdamW(agent.critic.parameters(), lr=critic_lr, eps=eps)
 
     # Create episode buffer
     buffer = TrajectoryBuffer(n_envs, n_steps, device)
 
     # Stats tracking setup
     global_step = 0
-    last_eval = global_step
+    last_eval, last_checkpoint = global_step, global_step
     autoreset = torch.zeros(n_envs, dtype=bool, device=device)
 
     obs, _ = train_envs.reset(seed=seed)
@@ -139,12 +155,27 @@ def ppo(
         )
         eval_log_collector.append(LogCollector(target="reward", log_key="eval/steps", reduce="cnt"))
 
+    # Establish an initial baseline
+    logs = evaluate_agent(
+        eval_envs,
+        agent,
+        n_steps=n_eval_steps,
+        obs_tf=obs_tf,
+        action_tf=action_tf,
+        device=device,
+        collector=eval_log_collector,
+        seed=seed,
+    )
+    logger.log(logs, step=global_step)
+    
     for iteration in range(1, n_iterations + 1):
         start_time = time.perf_counter()
         steps = torch.zeros(n_envs, dtype=torch.int32, device=device)
         while any(active := (steps < n_steps)):
+            obs_tf.update(obs)
             with torch.no_grad():
-                action, logprob, _, value = agent.action_and_value(obs)
+                action, logprob, _, value = agent.action_and_value(obs_tf(obs))
+            action = action_tf(action)
             next_obs, reward, terminated, truncated, info = train_envs.step(action)
             # Aggregate logs in a customizable way
             rollout_log_collector.collect(
@@ -189,7 +220,7 @@ def ppo(
 
         # bootstrap value if not done
         with torch.no_grad():
-            next_value = agent.value(next_obs).reshape(1, -1)
+            next_value = agent.value(obs_tf(next_obs)).reshape(1, -1)
             advantages = torch.zeros_like(buffer["reward"], device=device)
             lastgaelam = 0
             for t in reversed(range(n_steps)):
@@ -234,7 +265,7 @@ def ppo(
                 end = start + minibatch_size
                 mb_inds = b_inds[start:end]
                 _, newlogprob, entropy, newvalue = agent.action_and_value(
-                    b_obs[mb_inds], b_actions[mb_inds]
+                    obs_tf(b_obs[mb_inds]), b_actions[mb_inds]
                 )
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
@@ -299,14 +330,16 @@ def ppo(
         )
 
         # Evaluate the agent
-        if global_step - last_eval >= eval_period:
+        eval_condition = check_interrupt_sample(global_step, last_eval, period=eval_period)
+        if eval_condition:
             tstart = time.perf_counter()
-            sync_env_normalization(train_envs, eval_envs)
             eval_seed = seed if seed is None else seed + iteration
             logs = evaluate_agent(
                 eval_envs,
                 agent,
                 n_steps=n_eval_steps,
+                obs_tf=obs_tf,
+                action_tf=action_tf,
                 device=device,
                 collector=eval_log_collector,
                 seed=eval_seed,
@@ -314,6 +347,36 @@ def ppo(
             logger.log(logs, step=global_step)
             last_eval = global_step
             logger.log({"time/eval": time.perf_counter() - tstart}, step=global_step)
+        
+        # Save training checkpoint
+        checkpoint_condition = check_interrupt_sample(
+            global_step, last_checkpoint, period=checkpoint_period
+        )
+        if checkpoint_condition and checkpoint_path is not None:
+            tstart = time.perf_counter()
+            checkpoint(
+                checkpoint_path, 
+                agent,
+                buffer=None, 
+                critic_optimizer=critic_optim,
+                actor_optimizer=actor_optim, 
+                obs_tf=obs_tf, 
+                checkpoint_buffer=False
+            )
+            last_checkpoint = global_step
+            logger.log({"time/checkpoint": time.perf_counter() - tstart}, step=global_step)
         buffer.clear()
+    
+    # Save final checkpoint
+    if checkpoint_path is not None:
+        checkpoint(
+            checkpoint_path, 
+            agent,
+            buffer=None, 
+            critic_optimizer=critic_optim,
+            actor_optimizer=actor_optim, 
+            obs_tf=obs_tf, 
+            checkpoint_buffer=False
+        )
     logger.flush()
     return agent
