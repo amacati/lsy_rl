@@ -132,7 +132,7 @@ class SACPolicy(Policy, nn.Module):
         self.critic = critic
 
     def action(self, obs: Tensor) -> Tensor:
-        return self.actor.mean(obs)
+        return self.actor.mean_action(obs)
     
     def save(self, path: Path):
         save_dict = {"actor": self.actor.state_dict(), "critic": self.critic.state_dict()}
