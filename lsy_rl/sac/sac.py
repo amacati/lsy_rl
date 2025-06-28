@@ -13,9 +13,8 @@ from lsy_rl.core.logger import Collector, CollectorList, EmptyLogger, LogCollect
 from lsy_rl.core.replay_buffer import VectorReplayBuffer
 from lsy_rl.core.transforms import IdentityTF, Transform
 from lsy_rl.sac.policy import SACActor, SACCritic, SACPolicy
-from lsy_rl.utils.utils import set_seeds, tensordict_sample
-# TODO: Should probably move these functions to utils
-from lsy_rl.td3.td3 import check_interrupt_sample, checkpoint
+from lsy_rl.utils.utils import set_seeds, tensordict_sample, check_interrupt_sample, checkpoint
+
 
 @torch.no_grad()
 def evaluate_agent(

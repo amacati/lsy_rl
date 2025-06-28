@@ -11,7 +11,7 @@ from lsy_rl.core.logger import Collector, CollectorList, EmptyLogger, LogCollect
 from lsy_rl.core.replay_buffer import VectorReplayBuffer
 from lsy_rl.core.transforms import IdentityTF, Transform
 from lsy_rl.td3.policy import TD3Actor, TD3Critic, TD3Policy
-from lsy_rl.utils.utils import set_seeds, tensordict_sample
+from lsy_rl.utils.utils import set_seeds, tensordict_sample, check_interrupt_sample, checkpoint
 
 
 def td3(
@@ -404,35 +404,3 @@ def evaluate_policy(
             avg_log[k].append(v)
     avg_log = {k: sum(v) / len(v) for k, v in avg_log.items()}
     return avg_log
-
-
-def check_interrupt_sample(
-    n_samples: int, last_n_samples: int, period: int | None = None, min_samples: int | None = None
-) -> bool:
-    """Check if we should interrupt sampling based on how many samples we have collected."""
-    if min_samples is not None and n_samples < min_samples:
-        return False
-    if period is not None and n_samples - last_n_samples >= period:
-        return True
-    return False
-
-
-def checkpoint(
-    path: Path,
-    policy: TD3Policy,
-    buffer: VectorReplayBuffer,
-    critic_optimizer: torch.optim.Optimizer,
-    actor_optimizer: torch.optim.Optimizer,
-    obs_tf: Transform,
-    checkpoint_buffer: bool = False,
-):
-    """Save a checkpoint of the policy, replay buffer and optimizers."""
-    assert isinstance(path, Path), "The checkpoint path must be a Path object."
-    assert path.exists(), f"Checkpoint path {path} doesn't exist."
-    assert path.is_dir(), f"The checkpoint path {path} must be a directory."
-    policy.save(path / "policy.pt")
-    if checkpoint_buffer:
-        buffer.save(path / "buffer.pt")
-    torch.save(actor_optimizer.state_dict(), path / "actor_opt.pt")
-    torch.save(critic_optimizer.state_dict(), path / "critic_opt.pt")
-    torch.save(obs_tf.state_dict(), path / "obs_transform.pt")

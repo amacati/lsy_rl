@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import inspect
 import logging
@@ -5,7 +7,7 @@ import random
 import sys
 import tomllib
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeVar, TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -15,6 +17,11 @@ from gymnasium.wrappers.vector import NormalizeObservation
 from ml_collections import ConfigDict
 from tensordict import TensorDict
 from torch import Tensor
+
+if TYPE_CHECKING:
+    from lsy_rl.core.policy import Policy
+    from lsy_rl.core.replay_buffer import ReplayBuffer
+    from lsy_rl.core.transforms import Transform
 
 logger = logging.getLogger(__name__)
 
@@ -259,3 +266,35 @@ def sync_env_normalization(train_envs: VectorEnv, eval_envs: VectorEnv):
         return
     eval_norm_env.obs_rms.mean = train_norm_env.obs_rms.mean
     eval_norm_env.obs_rms.var = train_norm_env.obs_rms.var
+
+
+def check_interrupt_sample(
+    n_samples: int, last_n_samples: int, period: int | None = None, min_samples: int | None = None
+) -> bool:
+    """Check if we should interrupt sampling based on how many samples we have collected."""
+    if min_samples is not None and n_samples < min_samples:
+        return False
+    if period is not None and n_samples - last_n_samples >= period:
+        return True
+    return False
+
+
+def checkpoint(
+    path: Path,
+    policy: Policy,
+    buffer: ReplayBuffer,
+    critic_optimizer: torch.optim.Optimizer,
+    actor_optimizer: torch.optim.Optimizer,
+    obs_tf: Transform,
+    checkpoint_buffer: bool = False,
+):
+    """Save a checkpoint of the policy, replay buffer and optimizers."""
+    assert isinstance(path, Path), "The checkpoint path must be a Path object."
+    assert path.exists(), f"Checkpoint path {path} doesn't exist."
+    assert path.is_dir(), f"The checkpoint path {path} must be a directory."
+    policy.save(path / "policy.pt")
+    if checkpoint_buffer:
+        buffer.save(path / "buffer.pt")
+    torch.save(actor_optimizer.state_dict(), path / "actor_opt.pt")
+    torch.save(critic_optimizer.state_dict(), path / "critic_opt.pt")
+    torch.save(obs_tf.state_dict(), path / "obs_transform.pt")

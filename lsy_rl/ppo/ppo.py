@@ -13,9 +13,8 @@ from lsy_rl.core.logger import Collector, CollectorList, EmptyLogger, LogCollect
 from lsy_rl.core.replay_buffer import TrajectoryBuffer
 from lsy_rl.core.transforms import IdentityTF, Transform
 from lsy_rl.ppo.policy import PPOActor, PPOCritic, PPOPolicy
-from lsy_rl.utils.utils import set_seeds
-# TODO: Should probably move these functions to utils
-from lsy_rl.td3.td3 import check_interrupt_sample, checkpoint
+from lsy_rl.utils.utils import set_seeds, check_interrupt_sample, checkpoint
+
 
 def evaluate_agent(
     envs: VectorEnv,
