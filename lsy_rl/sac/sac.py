@@ -1,6 +1,7 @@
 import time
 from collections import defaultdict
 from pathlib import Path
+from functools import partial
 
 import numpy as np
 import torch
@@ -83,6 +84,7 @@ def sac(
     eval_period: int | None = None,
     eval_steps: int = 1000,
     checkpoint_period: int | None = None,
+    overwrite_policy: bool = True,
     alpha: float = 0.2,
     autotune_alpha: bool = False,
     alpha_lr: float = 3e-4,
@@ -151,6 +153,18 @@ def sac(
             num_envs=train_envs.num_envs, max_size=buffer_size, device=device, seed=seed
         )
 
+    # Create a partial function for checkpoint for more compact calls
+    checkpoint_partial = partial(
+        checkpoint,
+        path = checkpoint_path,
+        policy = policy,
+        buffer = replay_buffer,
+        critic_optimizer = critic_optim,
+        actor_optimizer = actor_optim,
+        obs_tf = obs_tf,
+        checkpoint_buffer = checkpoint_buffer
+    ) 
+
     # Stats tracking setup
     n_train_steps = 0
     n_samples = 0
@@ -164,6 +178,8 @@ def sac(
         policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device
     )
     logger.log(log, step=n_samples)        
+    if not overwrite_policy and checkpoint_path is not None:
+        checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)   
 
     obs, _ = train_envs.reset(seed=seed)
 
@@ -300,27 +316,12 @@ def sac(
         if checkpoint_condition and checkpoint_path is not None:
             tstart = time.perf_counter()
             last_checkpoint = n_samples
-            checkpoint(
-                checkpoint_path, 
-                policy,
-                replay_buffer, 
-                critic_optim,
-                actor_optim, 
-                obs_tf, 
-                checkpoint_buffer
-            )
+            checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)   
             logger.log({"time/checkpoint": time.perf_counter() - tstart}, step=n_samples)
     
     # Save final checkpoint
     if checkpoint_path is not None:
-        checkpoint(
-            checkpoint_path, 
-            policy,
-            replay_buffer, 
-            critic_optim,
-            actor_optim, 
-            obs_tf, 
-            checkpoint_buffer
-        )
+        checkpoint_partial(step=n_samples, overwrite_policy=True)   
+        
     logger.flush()
     return policy

@@ -2,6 +2,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Generator
+from functools import partial
 
 import torch
 from gymnasium.vector import VectorEnv
@@ -37,6 +38,7 @@ def td3(
     eval_period: int | None = None,
     eval_steps: int = 1000,
     checkpoint_period: int | None = None,
+    overwrite_policy: bool = True,
     train_min_samples: int | None = None,
     policy: TD3Policy | None = None,
     obs_tf: Transform = IdentityTF(),
@@ -95,10 +97,24 @@ def td3(
             train_envs.num_envs, max_size=buffer_size, device=device, seed=seed
         )
 
+    # Create a partial function for checkpoint for more compact calls
+    checkpoint_partial = partial(
+        checkpoint, 
+        path = checkpoint_path,
+        policy = policy,
+        buffer = replay_buffer,
+        critic_optimizer = critic_optimizer,
+        actor_optimizer = actor_optimizer,
+        obs_tf = obs_tf,
+        checkpoint_buffer = checkpoint_buffer
+    )
+
     n_train_steps = 0
     n_samples = 0
     logs = evaluate_policy(policy, eval_envs, eval_steps, obs_tf, action_tf, eval_collector, device)
     logger.log(logs, step=n_samples)
+    if not overwrite_policy and checkpoint_path is not None:
+        checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)    
     for n_samples, should_train, should_eval, should_checkpoint in collect_samples(
         policy=policy,
         env=train_envs,
@@ -145,25 +161,9 @@ def td3(
             )
             logger.log(log, step=n_samples)
         if should_checkpoint and checkpoint_path is not None:
-            checkpoint(
-                checkpoint_path,
-                policy,
-                replay_buffer,
-                critic_optimizer,
-                actor_optimizer,
-                obs_tf,
-                checkpoint_buffer,
-            )
+            checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)
     if checkpoint_path is not None:
-        checkpoint(
-            checkpoint_path,
-            policy,
-            replay_buffer,
-            critic_optimizer,
-            actor_optimizer,
-            obs_tf,
-            checkpoint_buffer,
-        )
+        checkpoint_partial(step=n_samples, overwrite_policy=True)
     logger.stop()
 
     return policy

@@ -1,6 +1,7 @@
 import time
 import warnings
 from pathlib import Path
+from functools import partial
 
 import numpy as np
 import torch
@@ -73,6 +74,7 @@ def ppo(
     critic_lr: float,
     eval_period: int,
     checkpoint_period: int | None = None,
+    overwrite_policy: bool = True,
     eps: float = 1e-5,
     clip_coef: float = 0.2,
     ent_coef: float = 0.01,
@@ -131,6 +133,18 @@ def ppo(
     # Create episode buffer
     buffer = TrajectoryBuffer(n_envs, n_steps, device)
 
+    # Create a partial function for checkpoint for more compact calls
+    checkpoint_partial = partial(
+        checkpoint, 
+        path = checkpoint_path,
+        policy = agent,
+        buffer = None,
+        critic_optimizer = critic_optim,
+        actor_optimizer = actor_optim,
+        obs_tf = obs_tf,
+        checkpoint_buffer = False
+    )
+
     # Stats tracking setup
     global_step = 0
     last_eval, last_checkpoint = global_step, global_step
@@ -166,6 +180,8 @@ def ppo(
         seed=seed,
     )
     logger.log(logs, step=global_step)
+    if not overwrite_policy and checkpoint_path is not None:
+        checkpoint_partial(step=global_step, overwrite_policy=overwrite_policy)
     
     for iteration in range(1, n_iterations + 1):
         start_time = time.perf_counter()
@@ -353,29 +369,14 @@ def ppo(
         )
         if checkpoint_condition and checkpoint_path is not None:
             tstart = time.perf_counter()
-            checkpoint(
-                checkpoint_path, 
-                agent,
-                buffer=None, 
-                critic_optimizer=critic_optim,
-                actor_optimizer=actor_optim, 
-                obs_tf=obs_tf, 
-                checkpoint_buffer=False
-            )
+            checkpoint_partial(step=global_step, overwrite_policy=overwrite_policy)
             last_checkpoint = global_step
             logger.log({"time/checkpoint": time.perf_counter() - tstart}, step=global_step)
         buffer.clear()
     
     # Save final checkpoint
     if checkpoint_path is not None:
-        checkpoint(
-            checkpoint_path, 
-            agent,
-            buffer=None, 
-            critic_optimizer=critic_optim,
-            actor_optimizer=actor_optim, 
-            obs_tf=obs_tf, 
-            checkpoint_buffer=False
-        )
+        checkpoint_partial(step=global_step, overwrite_policy=True)
+
     logger.flush()
     return agent

@@ -281,18 +281,25 @@ def check_interrupt_sample(
 
 def checkpoint(
     path: Path,
+    step: int,
     policy: Policy,
     buffer: ReplayBuffer,
     critic_optimizer: torch.optim.Optimizer,
     actor_optimizer: torch.optim.Optimizer,
     obs_tf: Transform,
+    overwrite_policy: bool = True,
     checkpoint_buffer: bool = False,
 ):
     """Save a checkpoint of the policy, replay buffer and optimizers."""
     assert isinstance(path, Path), "The checkpoint path must be a Path object."
     assert path.exists(), f"Checkpoint path {path} doesn't exist."
     assert path.is_dir(), f"The checkpoint path {path} must be a directory."
-    policy.save(path / "policy.pt")
+    if overwrite_policy:
+        policy.save(path / "policy.pt")
+    else:
+        policy_dir = path / "policies"
+        policy_dir.mkdir(exist_ok=True)
+        policy.save(policy_dir / f"policy_{int(step//1e3)}k.pt")
     if checkpoint_buffer:
         buffer.save(path / "buffer.pt")
     torch.save(actor_optimizer.state_dict(), path / "actor_opt.pt")
