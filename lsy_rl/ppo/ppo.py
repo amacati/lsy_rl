@@ -90,6 +90,7 @@ def ppo(
     device: torch.device = torch.device("cpu"),
     logger: Logger = EmptyLogger(),
     agent: PPOPolicy | None = None,
+    use_logstd_net: bool = False,
     obs_tf: Transform = IdentityTF(),
     action_tf: Transform = IdentityTF(),
     eval_action_tf: Transform = IdentityTF(),
@@ -123,7 +124,7 @@ def ppo(
     if agent is None:
         obs_shape = train_envs.single_observation_space.shape
         action_shape = train_envs.single_action_space.shape
-        actor = PPOActor(obs_shape, action_shape)
+        actor = PPOActor(obs_shape, action_shape, use_logstd_net=use_logstd_net)
         critic = PPOCritic(obs_shape)
         agent = PPOPolicy(actor, critic)
     agent.to(device)

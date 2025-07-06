@@ -17,15 +17,18 @@ def layer_init(layer: nn.Linear, std: float = np.sqrt(2), bias_const: float = 0.
 
 
 class PPOActor(nn.Module):
-    def __init__(self, obs_shape: tuple[int, ...], action_shape: tuple[int, ...]):
+    def __init__(self, obs_shape: tuple[int, ...], action_shape: tuple[int, ...], use_logstd_net: bool = False):
         super().__init__()
         assert isinstance(obs_shape, tuple), "obs_shape must be a tuple"
         assert isinstance(action_shape, tuple), "action_shape must be a tuple"
-        self.network = PPOActorNet(obs_shape, action_shape)
-        self.logstd = nn.Parameter(torch.zeros(1, torch.tensor(action_shape).prod()))
+        actor_net_cls = PPOActorNetWithStd if use_logstd_net else PPOActorNet
+        self.network = actor_net_cls(obs_shape, action_shape)
 
-    def mean(self, obs: Tensor) -> Tensor:
+    def mean_logstd(self, obs: Tensor) -> tuple[Tensor, Tensor]:
         return self.network(obs)
+    
+    def mean(self, obs: Tensor) -> Tensor:
+        return self.mean_logstd(obs)[0]
 
 
 class PPOActorNet(nn.Module):
@@ -41,13 +44,61 @@ class PPOActorNet(nn.Module):
                 "f_out": nn.Identity(),
             }
         )
+        self.logstd = nn.Parameter(torch.zeros(1, torch.tensor(action_shape).prod()))
 
-    def forward(self, obs: Tensor) -> Tensor:
+    def forward(self, obs: Tensor) -> tuple[Tensor, Tensor]:
         x = obs.float()
         for layer in self.network.values():
             x = layer(x)
-        return x
+        logstd = self.logstd.expand_as(x)
+        return x, logstd
 
+
+class PPOActorNetWithStd(nn.Module):
+    LOG_STD_MAX = 2
+    LOG_STD_MIN = -5
+
+    def __init__(self, obs_shape: tuple[int, ...], action_shape: tuple[int, ...]):
+        super().__init__()
+        self.shared_layers = nn.ModuleDict(
+            {
+                "in": layer_init(nn.Linear(torch.tensor(obs_shape).prod(), 64)),
+                "f_in": nn.Tanh(),
+                "hidden1": layer_init(nn.Linear(64, 64)),
+                "f_hidden1": nn.Tanh(),
+            }
+        )
+        self.mean_head = nn.ModuleDict(
+            {
+                "out": layer_init(nn.Linear(64, torch.tensor(action_shape).prod()), std=0.01),
+                "f_out": nn.Identity(),
+            }
+        )
+        self.logstd_head = nn.ModuleDict(
+            {
+                "out": layer_init(nn.Linear(64, torch.tensor(action_shape).prod())),
+                "f_out": nn.Tanh(),
+            }
+        )
+    
+    @property # To maintain backwards compatability with code using PPOActorNet
+    def network(self) -> nn.ModuleDict:
+        return self.mean_head
+    
+    def forward(self, obs: Tensor) -> tuple[Tensor, Tensor]:
+        x = obs.float()
+        for layer in self.shared_layers.values():
+            x = layer(x)
+        mean = x
+        for layer in self.mean_head.values():
+            mean = layer(mean)
+        logstd = x
+        for layer in self.logstd_head.values():
+            logstd = layer(logstd)
+        # Same method used in SAC's implementation for more stable training
+        logstd = self.LOG_STD_MIN + 0.5 * (self.LOG_STD_MAX - self.LOG_STD_MIN) * logstd + 1
+        return mean, logstd
+    
 
 class PPOCritic(nn.Module):
     def __init__(self, obs_shape: tuple[int, ...]):
@@ -90,8 +141,7 @@ class PPOPolicy(Policy, nn.Module):
     def action_and_value(
         self, obs: Tensor, action: Tensor | None = None, deterministic: bool = False
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        action_mean = self.actor.mean(obs)
-        action_logstd = self.actor.logstd.expand_as(action_mean)
+        action_mean, action_logstd = self.actor.mean_logstd(obs)
         action_std = torch.exp(action_logstd)
         probs = Normal(action_mean, action_std)
         if action is None:
