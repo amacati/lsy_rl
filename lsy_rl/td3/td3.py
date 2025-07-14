@@ -111,7 +111,7 @@ def td3(
 
     n_train_steps = 0
     n_samples = 0
-    logs = evaluate_policy(policy, eval_envs, eval_steps, obs_tf, action_tf, eval_collector, device)
+    logs = evaluate_policy(policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device)
     logger.log(logs, step=n_samples)
     if not overwrite_policy and checkpoint_path is not None:
         checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)    
