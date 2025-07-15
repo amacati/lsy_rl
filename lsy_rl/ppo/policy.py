@@ -44,7 +44,7 @@ class PPOActorNet(nn.Module):
                 "f_out": nn.Identity(),
             }
         )
-        self.logstd = nn.Parameter(torch.zeros(1, torch.tensor(action_shape).prod()))
+        self.logstd = nn.Parameter(-2*torch.ones(1, torch.tensor(action_shape).prod()))
 
     def forward(self, obs: Tensor) -> tuple[Tensor, Tensor]:
         x = obs.float()
@@ -96,7 +96,7 @@ class PPOActorNetWithStd(nn.Module):
         for layer in self.logstd_head.values():
             logstd = layer(logstd)
         # Same method used in SAC's implementation for more stable training
-        logstd = self.LOG_STD_MIN + 0.5 * (self.LOG_STD_MAX - self.LOG_STD_MIN) * logstd + 1
+        logstd = self.LOG_STD_MIN + 0.5 * (self.LOG_STD_MAX - self.LOG_STD_MIN) * (logstd + 1)
         return mean, logstd
     
 

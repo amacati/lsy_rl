@@ -68,7 +68,7 @@ class SACActorNet(nn.Module):
         for layer in self.logstd_layer.values():
             logstd = layer(logstd)
         # From SpinUp / Denis Yarats
-        logstd = self.LOG_STD_MIN + 0.5 * (self.LOG_STD_MAX - self.LOG_STD_MIN) * logstd + 1
+        logstd = self.LOG_STD_MIN + 0.5 * (self.LOG_STD_MAX - self.LOG_STD_MIN) * (logstd + 1)
         return mean, logstd
 
 
