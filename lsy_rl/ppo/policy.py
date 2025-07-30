@@ -76,7 +76,7 @@ class PPOActorNetWithStd(nn.Module):
         )
         self.logstd_head = nn.ModuleDict(
             {
-                "out": layer_init(nn.Linear(64, torch.tensor(action_shape).prod())),
+                "out": layer_init(nn.Linear(64, torch.tensor(action_shape).prod()), std=0.01),
                 "f_out": nn.Tanh(),
             }
         )
