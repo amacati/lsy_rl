@@ -14,17 +14,18 @@ class SACActor(nn.Module):
         assert isinstance(obs_shape, tuple), "obs_shape must be a tuple"
         assert isinstance(action_shape, tuple), "action_shape must be a tuple"
         self.network = SACActorNet(obs_shape, action_shape)
+        self.squash_layer = nn.Tanh()
 
     def action(self, obs: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         mean, logstd = self.network(obs)
         normal = torch.distributions.Normal(mean, logstd.exp())
         x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1))
-        action = torch.tanh(x_t)
+        action = self.squash_layer(x_t)
         log_prob = normal.log_prob(x_t)
         # Enforcing Action Bound
         log_prob -= torch.log(1.0 * (1 - action.pow(2)) + 1e-6)
         log_prob = log_prob.sum(1, keepdim=True)
-        mean = torch.tanh(mean)
+        mean = self.squash_layer(mean)
         return action, log_prob, mean
 
     def mean_action(self, obs: Tensor) -> Tensor:
@@ -33,7 +34,7 @@ class SACActor(nn.Module):
             x = layer(x)
         for layer in self.network.mean_head.values():
             x = layer(x)
-        return x
+        return self.squash_layer(x)
 
 
 class SACActorNet(nn.Module):
