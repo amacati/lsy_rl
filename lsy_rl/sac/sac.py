@@ -7,7 +7,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from gymnasium.vector import VectorEnv
-from tensordict import TensorDict
 from torch.optim import AdamW
 
 from lsy_rl.core.logger import Collector, CollectorList, EmptyLogger, LogCollector, Logger
@@ -88,6 +87,7 @@ def sac(
     alpha: float = 0.2,
     autotune_alpha: bool = False,
     alpha_lr: float = 3e-4,
+    target_entropy: float | None = None,
     learning_starts: int = 0,
     policy: SACPolicy | None = None,
     obs_tf: Transform = IdentityTF(),
@@ -141,8 +141,9 @@ def sac(
     actor_optim = AdamW(policy.actor.parameters(), lr=actor_lr, eps=eps)
 
     # Automatic entropy tuning
-    if autotune_alpha:
-        target_entropy = -float(np.prod(train_envs.single_action_space.shape))
+    if autotune_alpha: 
+        target_entropy = -float(np.prod(train_envs.single_action_space.shape)) \
+            if target_entropy is None else target_entropy
         log_alpha = torch.zeros(1, requires_grad=True, device=device)
         alpha = log_alpha.exp().item()
         alpha_optim = AdamW([log_alpha], lr=alpha_lr)
