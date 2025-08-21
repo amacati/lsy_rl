@@ -5,7 +5,7 @@ import inspect
 import logging
 import random
 import sys
-import tomllib
+import toml
 from pathlib import Path
 from typing import Any, Callable, TypeVar, TYPE_CHECKING
 
@@ -111,8 +111,7 @@ def load_config(path: Path) -> ConfigDict:
     Returns:
         The configuration as a ConfigDict object providing key access via dot/member syntax.
     """
-    with open(path, "rb") as f:
-        config = tomllib.load(f)
+    config = toml.load(path)
     return ConfigDict(config, type_safe=False)
 
 

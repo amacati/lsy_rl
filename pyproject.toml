@@ -19,7 +19,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
 ]
 keywords = ["gym", "reinforcement learning", "deep learning", "robotics"]
-dependencies = ["gymnasium >= 1.0.0", "numpy >= 2.0", "torch", "array-api-compat", "ml_collections", "tensordict"]
+dependencies = ["gymnasium >= 1.0.0", "numpy >= 2.0", "toml >=0.10.2", "torch", "array-api-compat", "ml_collections", "tensordict"]
 requires-python = ">=3.10"
 
 [project.optional-dependencies]
