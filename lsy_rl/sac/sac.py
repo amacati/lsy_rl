@@ -244,9 +244,9 @@ def sac(
                         next_state_actions = train_action_tf(next_state_actions)
                         min_qf_next_target = policy.critic.target(next_obs_t, next_state_actions)
                         min_qf_next_target -= alpha * next_state_log_pi
-                        next_q_value = data["reward"].flatten() + \
+                        next_q_value = (data["reward"].flatten() + \
                             ~data["terminated"].flatten() * \
-                            gamma * (min_qf_next_target).view(-1)
+                            gamma * (min_qf_next_target).view(-1)).float()
 
                     obs_t = obs_tf(data["obs"])
                     q1_a_values, q2_a_values = policy.critic.values(obs_t, data["action"])
