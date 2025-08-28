@@ -24,17 +24,19 @@ def evaluate_agent(
     obs_tf: Transform, 
     action_tf: Transform, 
     collector: Collector, 
-    device: torch.device
+    device: torch.device,
+    seed: int | None = None,
 ) -> dict[str, float]:
     """Evaluate the policy on the evaluation environment and log the results."""
-    obs, _ = envs.reset()
+    obs, _ = envs.reset(seed=seed)
     policy.eval()
     collector.clear()
     autoreset = torch.zeros(envs.num_envs, dtype=bool, device=device)
     logs = []
     for _ in range(0, n_steps, envs.num_envs):
         action = action_tf(policy.actor.mean_action(obs_tf(obs)))
-        next_obs, reward, terminated, truncated, info = envs.step(action)
+        # TODO: Remove .cpu() once ArrayConversion wrapper handles action transfers correctly 
+        next_obs, reward, terminated, truncated, info = envs.step(action.cpu())
         collector.collect(
             obs=obs,
             action=action,
@@ -176,7 +178,7 @@ def sac(
 
     # Establish an initial baseline
     log = evaluate_agent(
-        policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device
+        policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device, seed
     )
     logger.log(log, step=n_samples)        
     if not overwrite_policy and checkpoint_path is not None:
@@ -190,7 +192,8 @@ def sac(
         with torch.no_grad():
             action, _, _ = policy.actor.action(obs_tf(obs))
         action = action_tf(action)
-        next_obs, reward, terminated, truncated, info = train_envs.step(action)
+        # TODO: Remove .cpu() once ArrayConversion wrapper handles action transfers correctly 
+        next_obs, reward, terminated, truncated, info = train_envs.step(action.cpu())
         rollout_collector.collect(
             obs=obs,
             action=action,
@@ -304,8 +307,9 @@ def sac(
         if eval_condition:
             tstart = time.perf_counter()
             last_eval = n_samples
+            eval_seed = seed if seed is None else n_samples // eval_period
             log = evaluate_agent(
-                policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device
+                policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device, eval_seed
             )
             logger.log(log, step=n_samples)
             logger.log({"time/eval": time.perf_counter() - tstart}, step=n_samples)
