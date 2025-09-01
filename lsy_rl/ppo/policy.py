@@ -1,5 +1,6 @@
 from __future__ import annotations
-from pathlib import Path
+
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -9,6 +10,9 @@ from torch.distributions import Normal
 
 from lsy_rl.core.policy import Policy
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 def layer_init(layer: nn.Linear, std: float = np.sqrt(2), bias_const: float = 0.0) -> nn.Linear:
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -17,7 +21,12 @@ def layer_init(layer: nn.Linear, std: float = np.sqrt(2), bias_const: float = 0.
 
 
 class PPOActor(nn.Module):
-    def __init__(self, obs_shape: tuple[int, ...], action_shape: tuple[int, ...], use_logstd_net: bool = False):
+    def __init__(
+        self,
+        obs_shape: tuple[int, ...],
+        action_shape: tuple[int, ...],
+        use_logstd_net: bool = False,
+    ):
         super().__init__()
         assert isinstance(obs_shape, tuple), "obs_shape must be a tuple"
         assert isinstance(action_shape, tuple), "action_shape must be a tuple"
@@ -26,7 +35,7 @@ class PPOActor(nn.Module):
 
     def mean_logstd(self, obs: Tensor) -> tuple[Tensor, Tensor]:
         return self.network(obs)
-    
+
     def mean(self, obs: Tensor) -> Tensor:
         return self.mean_logstd(obs)[0]
 
@@ -44,7 +53,7 @@ class PPOActorNet(nn.Module):
                 "f_out": nn.Identity(),
             }
         )
-        self.logstd = nn.Parameter(-2*torch.ones(1, torch.tensor(action_shape).prod()))
+        self.logstd = nn.Parameter(-2 * torch.ones(1, torch.tensor(action_shape).prod()))
 
     def forward(self, obs: Tensor) -> tuple[Tensor, Tensor]:
         x = obs.float()
@@ -80,11 +89,11 @@ class PPOActorNetWithStd(nn.Module):
                 "f_out": nn.Tanh(),
             }
         )
-    
-    @property # To maintain backwards compatability with code using PPOActorNet
+
+    @property  # To maintain backwards compatability with code using PPOActorNet
     def network(self) -> nn.ModuleDict:
         return self.mean_head
-    
+
     def forward(self, obs: Tensor) -> tuple[Tensor, Tensor]:
         x = obs.float()
         for layer in self.shared_layers.values():
@@ -98,7 +107,7 @@ class PPOActorNetWithStd(nn.Module):
         # Same method used in SAC's implementation for more stable training
         logstd = self.LOG_STD_MIN + 0.5 * (self.LOG_STD_MAX - self.LOG_STD_MIN) * (logstd + 1)
         return mean, logstd
-    
+
 
 class PPOCritic(nn.Module):
     def __init__(self, obs_shape: tuple[int, ...]):
@@ -150,7 +159,7 @@ class PPOPolicy(Policy, nn.Module):
 
     def value(self, obs: Tensor) -> Tensor:
         return self.critic(obs)
-    
+
     def save(self, path: Path):
         save_dict = {"actor": self.actor.state_dict(), "critic": self.critic.state_dict()}
         torch.save(save_dict, path)

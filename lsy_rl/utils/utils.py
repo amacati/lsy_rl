@@ -5,20 +5,21 @@ import inspect
 import logging
 import random
 import sys
-import toml
 from pathlib import Path
-from typing import Any, Callable, TypeVar, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
 import numpy as np
+import toml
 import torch
 import torch.nn as nn
-from gymnasium.vector import VectorEnv
 from gymnasium.wrappers.vector import NormalizeObservation
 from ml_collections import ConfigDict
 from tensordict import TensorDict
 from torch import Tensor
 
 if TYPE_CHECKING:
+    from gymnasium.vector import VectorEnv
+
     from lsy_rl.core.policy import Policy
     from lsy_rl.core.replay_buffer import ReplayBuffer
     from lsy_rl.core.transforms import Transform
@@ -71,35 +72,6 @@ def torchify(x: np.ndarray, device: torch.device = torch.device("cpu")) -> torch
             return x
         case _:
             raise TypeError(f"Unsupported type {type(x)}")
-
-
-def torchify_dtype(dtype: np.dtype) -> torch.dtype:
-    # np.bool is deprecated, but bool cannot be used in a match statement. This is a workaround.
-    if dtype == bool:
-        return torch.bool
-    match dtype:
-        case np.uint8:
-            return torch.uint8
-        case np.int8:
-            return torch.int8
-        case np.int16:
-            return torch.int16
-        case np.int32:
-            return torch.int32
-        case np.int64:
-            return torch.int64
-        case np.float16:
-            return torch.float16
-        case np.float32:
-            return torch.float32
-        case np.float64:
-            return torch.float64
-        case np.complex64:
-            return torch.complex64
-        case np.complex128:
-            return torch.complex128
-        case _:
-            raise ValueError(f"Unsupported dtype {dtype}")
 
 
 def load_config(path: Path) -> ConfigDict:
@@ -298,7 +270,7 @@ def checkpoint(
     else:
         policy_dir = path / "policies"
         policy_dir.mkdir(exist_ok=True)
-        policy.save(policy_dir / f"policy_{int(step//1e3)}k.pt")
+        policy.save(policy_dir / f"policy_{int(step // 1e3)}k.pt")
     if checkpoint_buffer:
         buffer.save(path / "buffer.pt")
     torch.save(actor_optimizer.state_dict(), path / "actor_opt.pt")

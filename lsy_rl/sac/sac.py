@@ -1,7 +1,7 @@
 import time
 from collections import defaultdict
-from pathlib import Path
 from functools import partial
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -13,18 +13,18 @@ from lsy_rl.core.logger import Collector, CollectorList, EmptyLogger, LogCollect
 from lsy_rl.core.replay_buffer import VectorReplayBuffer
 from lsy_rl.core.transforms import IdentityTF, Transform
 from lsy_rl.sac.policy import SACActor, SACCritic, SACPolicy
-from lsy_rl.utils.utils import set_seeds, tensordict_sample, check_interrupt_sample, checkpoint
+from lsy_rl.utils.utils import check_interrupt_sample, checkpoint, set_seeds, tensordict_sample
 
 
 @torch.no_grad()
 def evaluate_agent(
-    policy: SACPolicy, 
-    envs: VectorEnv, 
-    n_steps: int, 
-    obs_tf: Transform, 
-    action_tf: Transform, 
-    collector: Collector, 
-    device: torch.device
+    policy: SACPolicy,
+    envs: VectorEnv,
+    n_steps: int,
+    obs_tf: Transform,
+    action_tf: Transform,
+    collector: Collector,
+    device: torch.device,
 ) -> dict[str, float]:
     """Evaluate the policy on the evaluation environment and log the results."""
     obs, _ = envs.reset()
@@ -110,7 +110,7 @@ def sac(
     action_tf.to(device=device)
     train_action_tf.to(device=device)
     eval_action_tf.to(device=device)
-    
+
     if train_collector is None:
         train_collector = CollectorList()
         train_collector.append(LogCollector(target="actor_loss", log_key="train/actor_loss"))
@@ -141,9 +141,12 @@ def sac(
     actor_optim = AdamW(policy.actor.parameters(), lr=actor_lr, eps=eps)
 
     # Automatic entropy tuning
-    if autotune_alpha: 
-        target_entropy = -float(np.prod(train_envs.single_action_space.shape)) \
-            if target_entropy is None else target_entropy
+    if autotune_alpha:
+        target_entropy = (
+            -float(np.prod(train_envs.single_action_space.shape))
+            if target_entropy is None
+            else target_entropy
+        )
         log_alpha = torch.zeros(1, requires_grad=True, device=device)
         alpha = log_alpha.exp().item()
         alpha_optim = AdamW([log_alpha], lr=alpha_lr)
@@ -157,14 +160,14 @@ def sac(
     # Create a partial function for checkpoint for more compact calls
     checkpoint_partial = partial(
         checkpoint,
-        path = checkpoint_path,
-        policy = policy,
-        buffer = replay_buffer,
-        critic_optimizer = critic_optim,
-        actor_optimizer = actor_optim,
-        obs_tf = obs_tf,
-        checkpoint_buffer = checkpoint_buffer
-    ) 
+        path=checkpoint_path,
+        policy=policy,
+        buffer=replay_buffer,
+        critic_optimizer=critic_optim,
+        actor_optimizer=actor_optim,
+        obs_tf=obs_tf,
+        checkpoint_buffer=checkpoint_buffer,
+    )
 
     # Stats tracking setup
     n_train_steps = 0
@@ -178,9 +181,9 @@ def sac(
     log = evaluate_agent(
         policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device
     )
-    logger.log(log, step=n_samples)        
+    logger.log(log, step=n_samples)
     if not overwrite_policy and checkpoint_path is not None:
-        checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)   
+        checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)
 
     obs, _ = train_envs.reset(seed=seed)
 
@@ -235,7 +238,7 @@ def sac(
             last_train = n_samples
             for _ in range(train_steps):
                 n_train_steps += 1
-                
+
                 if n_train_steps % critic_period == 0:
                     data = replay_buffer.sample(batch_size)
                     with torch.no_grad():
@@ -244,9 +247,10 @@ def sac(
                         next_state_actions = train_action_tf(next_state_actions)
                         min_qf_next_target = policy.critic.target(next_obs_t, next_state_actions)
                         min_qf_next_target -= alpha * next_state_log_pi
-                        next_q_value = (data["reward"].flatten() + \
-                            ~data["terminated"].flatten() * \
-                            gamma * (min_qf_next_target).view(-1)).float()
+                        next_q_value = (
+                            data["reward"].flatten()
+                            + ~data["terminated"].flatten() * gamma * (min_qf_next_target).view(-1)
+                        ).float()
 
                     obs_t = obs_tf(data["obs"])
                     q1_a_values, q2_a_values = policy.critic.values(obs_t, data["action"])
@@ -309,7 +313,7 @@ def sac(
             )
             logger.log(log, step=n_samples)
             logger.log({"time/eval": time.perf_counter() - tstart}, step=n_samples)
-        
+
         # Save training checkpoint
         checkpoint_condition = check_interrupt_sample(
             n_samples, last_checkpoint, period=checkpoint_period
@@ -317,12 +321,12 @@ def sac(
         if checkpoint_condition and checkpoint_path is not None:
             tstart = time.perf_counter()
             last_checkpoint = n_samples
-            checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)   
+            checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)
             logger.log({"time/checkpoint": time.perf_counter() - tstart}, step=n_samples)
-    
+
     # Save final checkpoint
     if checkpoint_path is not None:
-        checkpoint_partial(step=n_samples, overwrite_policy=True)   
-        
+        checkpoint_partial(step=n_samples, overwrite_policy=True)
+
     logger.flush()
     return policy

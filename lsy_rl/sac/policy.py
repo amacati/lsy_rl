@@ -1,5 +1,6 @@
 from __future__ import annotations
-from pathlib import Path
+
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -7,6 +8,10 @@ from torch import Tensor
 
 from lsy_rl.core.policy import Policy
 from lsy_rl.utils import polyak_update_
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 class SACActor(nn.Module):
     def __init__(self, obs_shape: tuple[int, ...], action_shape: tuple[int, ...]):
@@ -86,22 +91,23 @@ class SACCritic(nn.Module):
             param.requires_grad = False
         self.q1_target.load_state_dict(self.q1.state_dict())
         self.q2_target.load_state_dict(self.q2.state_dict())
-    
+
     def values(self, obs: Tensor, action: Tensor) -> tuple[Tensor, Tensor]:
         x = torch.cat([obs, action], dim=-1)
         return self.q1(x), self.q2(x)
-    
+
     def actor_value(self, obs: Tensor, action: Tensor) -> Tensor:
         x = torch.cat([obs, action], dim=-1)
         return torch.minimum(self.q1(x), self.q2(x))
-    
+
     def target(self, obs: Tensor, action: Tensor) -> Tensor:
         x = torch.cat([obs, action], dim=-1)
         return torch.minimum(self.q1_target(x), self.q2_target(x))
-    
+
     def update_target(self, tau: float):
         polyak_update_(self.q1_target, self.q1, tau)
         polyak_update_(self.q2_target, self.q2, tau)
+
 
 class SACCriticNet(nn.Module):
     def __init__(self, obs_shape: tuple[int, ...], action_shape: tuple[int, ...]):
@@ -134,7 +140,7 @@ class SACPolicy(Policy, nn.Module):
 
     def action(self, obs: Tensor) -> Tensor:
         return self.actor.mean_action(obs)
-    
+
     def save(self, path: Path):
         save_dict = {"actor": self.actor.state_dict(), "critic": self.critic.state_dict()}
         torch.save(save_dict, path)

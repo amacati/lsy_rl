@@ -1,8 +1,8 @@
 import time
 from collections import defaultdict
+from functools import partial
 from pathlib import Path
 from typing import Generator
-from functools import partial
 
 import torch
 from gymnasium.vector import VectorEnv
@@ -12,7 +12,7 @@ from lsy_rl.core.logger import Collector, CollectorList, EmptyLogger, LogCollect
 from lsy_rl.core.replay_buffer import VectorReplayBuffer
 from lsy_rl.core.transforms import IdentityTF, Transform
 from lsy_rl.td3.policy import TD3Actor, TD3Critic, TD3Policy
-from lsy_rl.utils.utils import set_seeds, tensordict_sample, check_interrupt_sample, checkpoint
+from lsy_rl.utils.utils import check_interrupt_sample, checkpoint, set_seeds, tensordict_sample
 
 
 def td3(
@@ -99,22 +99,24 @@ def td3(
 
     # Create a partial function for checkpoint for more compact calls
     checkpoint_partial = partial(
-        checkpoint, 
-        path = checkpoint_path,
-        policy = policy,
-        buffer = replay_buffer,
-        critic_optimizer = critic_optimizer,
-        actor_optimizer = actor_optimizer,
-        obs_tf = obs_tf,
-        checkpoint_buffer = checkpoint_buffer
+        checkpoint,
+        path=checkpoint_path,
+        policy=policy,
+        buffer=replay_buffer,
+        critic_optimizer=critic_optimizer,
+        actor_optimizer=actor_optimizer,
+        obs_tf=obs_tf,
+        checkpoint_buffer=checkpoint_buffer,
     )
 
     n_train_steps = 0
     n_samples = 0
-    logs = evaluate_policy(policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device)
+    logs = evaluate_policy(
+        policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device
+    )
     logger.log(logs, step=n_samples)
     if not overwrite_policy and checkpoint_path is not None:
-        checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)    
+        checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)
     for n_samples, should_train, should_eval, should_checkpoint in collect_samples(
         policy=policy,
         env=train_envs,

@@ -1,7 +1,7 @@
 import time
 import warnings
-from pathlib import Path
 from functools import partial
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -14,15 +14,15 @@ from lsy_rl.core.logger import Collector, CollectorList, EmptyLogger, LogCollect
 from lsy_rl.core.replay_buffer import TrajectoryBuffer
 from lsy_rl.core.transforms import IdentityTF, Transform
 from lsy_rl.ppo.policy import PPOActor, PPOCritic, PPOPolicy
-from lsy_rl.utils.utils import set_seeds, check_interrupt_sample, checkpoint
+from lsy_rl.utils.utils import check_interrupt_sample, checkpoint, set_seeds
 
 
 def evaluate_agent(
     envs: VectorEnv,
     policy: PPOPolicy,
     n_steps: int,
-    obs_tf: Transform, 
-    action_tf: Transform, 
+    obs_tf: Transform,
+    action_tf: Transform,
     device: str,
     collector: Collector,
     seed: int | None = None,
@@ -136,14 +136,14 @@ def ppo(
 
     # Create a partial function for checkpoint for more compact calls
     checkpoint_partial = partial(
-        checkpoint, 
-        path = checkpoint_path,
-        policy = agent,
-        buffer = None,
-        critic_optimizer = critic_optim,
-        actor_optimizer = actor_optim,
-        obs_tf = obs_tf,
-        checkpoint_buffer = False
+        checkpoint,
+        path=checkpoint_path,
+        policy=agent,
+        buffer=None,
+        critic_optimizer=critic_optim,
+        actor_optimizer=actor_optim,
+        obs_tf=obs_tf,
+        checkpoint_buffer=False,
     )
 
     # Stats tracking setup
@@ -183,7 +183,7 @@ def ppo(
     logger.log(logs, step=global_step)
     if not overwrite_policy and checkpoint_path is not None:
         checkpoint_partial(step=global_step, overwrite_policy=overwrite_policy)
-    
+
     for iteration in range(1, n_iterations + 1):
         start_time = time.perf_counter()
         steps = torch.zeros(n_envs, dtype=torch.int32, device=device)
@@ -363,7 +363,7 @@ def ppo(
             logger.log(logs, step=global_step)
             last_eval = global_step
             logger.log({"time/eval": time.perf_counter() - tstart}, step=global_step)
-        
+
         # Save training checkpoint
         checkpoint_condition = check_interrupt_sample(
             global_step, last_checkpoint, period=checkpoint_period
@@ -374,7 +374,7 @@ def ppo(
             last_checkpoint = global_step
             logger.log({"time/checkpoint": time.perf_counter() - tstart}, step=global_step)
         buffer.clear()
-    
+
     # Save final checkpoint
     if checkpoint_path is not None:
         checkpoint_partial(step=global_step, overwrite_policy=True)
