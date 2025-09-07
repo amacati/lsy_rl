@@ -212,8 +212,7 @@ def collect_samples(
         obs_t = obs_tf(obs)
         action = policy.actor(obs_t)
         action = action_tf(action)
-        # TODO: Remove .cpu() once ArrayConversion wrapper handles action transfers correctly 
-        next_obs, reward, terminated, truncated, info = env.step(action.cpu())
+        next_obs, reward, terminated, truncated, info = env.step(action)
         collector.collect(
             obs=obs,
             action=action,
@@ -381,8 +380,7 @@ def evaluate_policy(
     logs = []
     for _ in range(0, n_steps, envs.num_envs):
         action = action_tf(policy.action(obs_tf(obs)))
-        # TODO: Remove .cpu() once ArrayConversion wrapper handles action transfers correctly 
-        next_obs, reward, terminated, truncated, info = envs.step(action.cpu())
+        next_obs, reward, terminated, truncated, info = envs.step(action)
         collector.collect(
             obs=obs,
             action=action,

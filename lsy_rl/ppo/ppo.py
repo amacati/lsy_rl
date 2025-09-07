@@ -35,8 +35,7 @@ def evaluate_agent(
         with torch.no_grad():
             action, _, _, _ = policy.action_and_value(obs_tf(obs), deterministic=True)
         action = action_tf(action)
-        # TODO: Remove .cpu() once ArrayConversion wrapper handles action transfers correctly 
-        next_obs, reward, terminated, truncated, info = envs.step(action.cpu())
+        next_obs, reward, terminated, truncated, info = envs.step(action)
         collector.collect(
             obs=obs,
             action=action,
@@ -193,8 +192,7 @@ def ppo(
             with torch.no_grad():
                 action, logprob, _, value = agent.action_and_value(obs_tf(obs))
             action = action_tf(action)
-            # TODO: Remove .cpu() once ArrayConversion wrapper handles action transfers correctly 
-            next_obs, reward, terminated, truncated, info = train_envs.step(action.cpu())
+            next_obs, reward, terminated, truncated, info = train_envs.step(action)
             # Aggregate logs in a customizable way
             rollout_log_collector.collect(
                 obs=obs,

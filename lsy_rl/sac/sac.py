@@ -35,8 +35,7 @@ def evaluate_agent(
     logs = []
     for _ in range(0, n_steps, envs.num_envs):
         action = action_tf(policy.actor.mean_action(obs_tf(obs)))
-        # TODO: Remove .cpu() once ArrayConversion wrapper handles action transfers correctly 
-        next_obs, reward, terminated, truncated, info = envs.step(action.cpu())
+        next_obs, reward, terminated, truncated, info = envs.step(action)
         collector.collect(
             obs=obs,
             action=action,
@@ -192,8 +191,7 @@ def sac(
         with torch.no_grad():
             action, _, _ = policy.actor.action(obs_tf(obs))
         action = action_tf(action)
-        # TODO: Remove .cpu() once ArrayConversion wrapper handles action transfers correctly 
-        next_obs, reward, terminated, truncated, info = train_envs.step(action.cpu())
+        next_obs, reward, terminated, truncated, info = train_envs.step(action)
         rollout_collector.collect(
             obs=obs,
             action=action,
