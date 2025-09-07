@@ -45,12 +45,13 @@ def to_transforms(transforms: list[Transform | dict] | Transform) -> ChainedTF:
     return transform
 
 
-def share_transforms(transforms: list[ChainedTF], exclude: list[Transform] = []):
+def share_transforms(transforms: list[ChainedTF], exclude: list[Transform] | None = None):
     """Share the parameters of a list of chained transforms.
 
     Args:
         transforms: The list of chained transforms to share parameters between.
     """
+    exclude = [] if exclude is None else exclude
     assert all(isinstance(x, ChainedTF) for x in transforms), "All elements must be ChainedTFs"
     for i, ctf in enumerate(transforms):
         assert isinstance(ctf, ChainedTF), "All elements must be ChainedTFs"
@@ -118,6 +119,11 @@ class ChainedTF(Transform):
         for transform in self.params["transforms"]:
             x = transform(x)
         return x
+
+    def update(self, x: Tensor | TensorDict):
+        """Update all transforms in the chain with a batch of data."""
+        for transform in self.params["transforms"]:
+            transform.update(x)
 
     def append(self, transform: Transform):
         """Append a transform to the chain."""
