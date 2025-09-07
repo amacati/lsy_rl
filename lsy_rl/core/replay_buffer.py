@@ -221,7 +221,9 @@ class TrajectoryBuffer(ReplayBuffer):
         # Note: weights_only=False is required to recover the buffer when loading
         save_dict = torch.load(path, map_location=self.device, weights_only=False)
         self._idx, self.buffer = save_dict["idx"], save_dict["buffer"]
-        assert self.buffer.batch_size == (self.trajectory_len, self.num_envs), "Loaded buffer has wrong size"
+        assert self.buffer.batch_size == (self.trajectory_len, self.num_envs), (
+            "Loaded buffer has wrong size"
+        )
 
     def full(self) -> bool:
         """Check if the buffer is full."""
@@ -351,7 +353,9 @@ class VectorReplayBuffer(ReplayBuffer):
         save_dict = torch.load(path, map_location=self.device, weights_only=False)
         self._idx, self._maxidx = save_dict["idx"], save_dict["maxidx"]
         self.buffer = save_dict["buffer"]
-        assert self.buffer.batch_size == (self.num_envs, self.bufflen), "Loaded buffer has wrong size"
+        assert self.buffer.batch_size == (self.num_envs, self.bufflen), (
+            "Loaded buffer has wrong size"
+        )
 
     def __len__(self) -> int:
         """Return the number of valid samples in the buffer."""

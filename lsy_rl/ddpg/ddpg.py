@@ -410,7 +410,7 @@ class DDPG(Algorithm):
         """Log the time spent in each part of the algorithm."""
         if self.time_info.n_samples - self.time_info.last_log < self.time_info.log_period:
             return
-        self.logger.log(self.time_info.log.toDict(), step=self.time_info.n_samples)
+        self.logger.log(self.time_info.log.to_dict(), step=self.time_info.n_samples)
         self.time_info.last_log = self.time_info.n_samples
 
     def _set_seed(self, seed: int | None):
@@ -453,13 +453,15 @@ class DDPG(Algorithm):
 
     def _init_rollout_info(self) -> ConfigDict:
         """Initialize a container to store rollout information for flow control and logging."""
-        info = ConfigDict()
+        info = ConfigDict(type_safe=False)
         info.n_samples = 0
         info.steps = torch.zeros(self.env.num_envs, device=self.cfg.train.device)
         info.rewards = torch.zeros(self.env.num_envs, device=self.cfg.train.device)
         info.log_period = max(1, self.cfg.rollout.max_samples // self.num_logs)
         info.last_log = 0
-        info.log = ConfigDict({"ep_steps": 0, "ep_reward": 0, "n_episodes": 0, "last_rewards": []})
+        info.log = ConfigDict(
+            {"ep_steps": 0, "ep_reward": 0, "n_episodes": 0, "last_rewards": []}, type_safe=False
+        )
         info.start_time = time.time()
         info.autoreset = False
         info.last_obs = None
@@ -474,7 +476,7 @@ class DDPG(Algorithm):
         total_train_steps = num_trainings * self.cfg.train.steps
         info.log_period = max(1, total_train_steps // self.num_logs)
         info.last_log = 0
-        log = ConfigDict()
+        log = ConfigDict(type_safe=False)
         log.actor_loss, log.actor_steps_since_log = 0, 0
         log.critic_loss, log.critic_steps_since_log = 0, 0
         info.log = log
@@ -495,7 +497,8 @@ class DDPG(Algorithm):
         info.last_log = 0
         info.log_period = max(1, self.cfg.rollout.max_samples // self.num_logs)
         info.log = ConfigDict(
-            {"time/rollout": 0, "time/train": 0, "time/eval": 0, "time/checkpoint": 0}
+            {"time/rollout": 0, "time/train": 0, "time/eval": 0, "time/checkpoint": 0},
+            type_safe=False,
         )
         return info
 

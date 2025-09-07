@@ -21,9 +21,10 @@ def td3(
     n_steps: int,
     actor_lr: float,
     critic_lr: float,
+    optimizer_betas: tuple[float, float] = (0.9, 0.999),
+    weight_decay: float = 0.01,
     replay_buffer: VectorReplayBuffer | None = None,
     buffer_size: int = 1_000_000,
-    eps: float = 1e-8,
     train_period: int = 1,
     train_steps: int = 1,
     critic_period: int = 1,
@@ -89,8 +90,12 @@ def td3(
         policy = TD3Policy(actor, critic)
     policy.to(device=device)
 
-    critic_optimizer = AdamW(policy.critic.parameters(), lr=critic_lr, eps=eps)
-    actor_optimizer = AdamW(policy.actor.parameters(), lr=actor_lr, eps=eps)
+    actor_optimizer = AdamW(
+        policy.actor.parameters(), lr=actor_lr, weight_decay=weight_decay, betas=optimizer_betas
+    )
+    critic_optimizer = AdamW(
+        policy.critic.parameters(), lr=critic_lr, weight_decay=weight_decay, betas=optimizer_betas
+    )
 
     if replay_buffer is None:
         replay_buffer = VectorReplayBuffer(
