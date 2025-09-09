@@ -117,7 +117,7 @@ def td3(
     n_train_steps = 0
     n_samples = 0
     logs = evaluate_policy(
-        policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device
+        policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device, seed
     )
     logger.log(logs, step=n_samples)
     if not overwrite_policy and checkpoint_path is not None:
@@ -163,8 +163,9 @@ def td3(
             )
             n_train_steps += train_steps
         if should_eval:
+            eval_seed = seed if seed is None else n_samples // eval_period
             log = evaluate_policy(
-                policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device=device
+                policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device=device, seed=eval_seed,
             )
             logger.log(log, step=n_samples)
         if should_checkpoint and checkpoint_path is not None:
@@ -376,9 +377,10 @@ def evaluate_policy(
     action_tf: Transform,
     collector: Collector,
     device: torch.device,
+    seed: int | None = None,
 ) -> dict[str, float]:
     """Evaluate the policy on the evaluation environment and log the results."""
-    obs, _ = envs.reset()
+    obs, _ = envs.reset(seed=seed)
     policy.eval()
     collector.clear(mask=torch.ones(envs.num_envs, dtype=torch.bool))
     autoreset = torch.zeros(envs.num_envs, dtype=bool, device=device)
