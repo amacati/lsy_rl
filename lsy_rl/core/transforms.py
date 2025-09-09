@@ -320,7 +320,6 @@ class TensorNormTF(Transform):
     def __init__(self, shared: bool = False):
         """Parameters are created lazily during the first forward pass or update."""
         super().__init__(shared=shared)
-        self.eps2 = 1e-4
         self._is_init = False
 
     def forward(self, x: Tensor) -> Tensor:
@@ -339,7 +338,7 @@ class TensorNormTF(Transform):
         delta = x - self.params["mean"]
         self.params["mean"] += torch.sum(delta / self.params["count"], axis=0)
         self.params["m2"] += torch.sum(delta * (x - self.params["mean"]), axis=0)
-        std2 = torch.maximum(self.eps2, self.params["m2"] / self.params["count"])  # Num. stability
+        std2 = torch.maximum(self.params["eps2"], self.params["m2"] / self.params["count"])  # Num. stability
         self.params["std"] = torch.sqrt(std2)
 
     def _lazy_init(self, x: Tensor):
@@ -357,6 +356,9 @@ class TensorNormTF(Transform):
             )
             self.params["count"] = nn.Parameter(
                 torch.zeros(1, dtype=torch.int64, device=x.device), requires_grad=False
+            )
+            self.params["eps2"] = nn.Parameter(
+                torch.tensor(1e-4, dtype=x.dtype, device=x.device), requires_grad=False
             )
             self._is_init = True
 
