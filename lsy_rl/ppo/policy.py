@@ -53,7 +53,7 @@ class PPOActorNet(nn.Module):
                 "f_out": nn.Identity(),
             }
         )
-        self.logstd = nn.Parameter(-2 * torch.ones(1, torch.tensor(action_shape).prod()))
+        self.logstd = nn.Parameter(torch.zeros(1, torch.tensor(action_shape).prod()))
 
     def forward(self, obs: Tensor) -> tuple[Tensor, Tensor]:
         x = obs.float()
