@@ -116,10 +116,10 @@ def td3(
 
     n_train_steps = 0
     n_samples = 0
-    logs = evaluate_policy(
+    eval_logs = evaluate_policy(
         policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device, seed
     )
-    logger.log(logs, step=n_samples)
+    logger.log(eval_logs, step=n_samples)
     if not overwrite_policy and checkpoint_path is not None:
         checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)
     for n_samples, should_train, should_eval, should_checkpoint in collect_samples(
@@ -137,13 +137,13 @@ def td3(
         logger=logger,
         device=device,
     ):
+        logs = ()
         if should_train:
             train_policy(
                 policy=policy,
                 replay_buffer=replay_buffer,
                 steps=train_steps,
                 n_train_steps=n_train_steps,
-                n_samples=n_samples,
                 critic_period=critic_period,
                 actor_period=actor_period,
                 actor_target_period=actor_target_period,
@@ -159,15 +159,27 @@ def td3(
                 actor_optimizer=actor_optimizer,
                 collector=train_collector,
                 reward_clip=reward_clip,
-                logger=logger,
             )
             n_train_steps += train_steps
+            if train_log := train_collector.log():
+                logs = logs + ((n_samples - (n_samples % train_period), train_log),)
+                train_collector.clear()
         if should_eval:
             eval_seed = seed if seed is None else n_samples // eval_period
-            log = evaluate_policy(
-                policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device=device, seed=eval_seed,
+            eval_log = evaluate_policy(
+                policy,
+                eval_envs,
+                eval_steps,
+                obs_tf,
+                eval_action_tf,
+                eval_collector,
+                device=device,
+                seed=eval_seed,
             )
-            logger.log(log, step=n_samples)
+            logs = logs + ((n_samples - (n_samples % eval_period), eval_log),)
+        # Make sure we log in the correct order so that steps are strictly increasing
+        for step, log in sorted(logs, key=lambda x: x[0]):
+            logger.log(log, step=step)
         if should_checkpoint and checkpoint_path is not None:
             checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)
     if checkpoint_path is not None:
@@ -245,14 +257,6 @@ def collect_samples(
         )
         n_samples += mask.sum().item()
 
-        if done.any():
-            logger.log(collector.log(done), step=n_samples)
-        if autoreset.any():
-            collector.clear(autoreset)
-
-        autoreset = done
-        obs = next_obs
-
         train_condition = check_interrupt_sample(
             n_samples, last_train, period=train_period, min_samples=train_min_samples
         )
@@ -261,13 +265,14 @@ def collect_samples(
             n_samples, last_checkpoint, period=checkpoint_period
         )
         if train_condition:
-            last_train = n_samples
+            last_train = n_samples - (n_samples % train_period)
         if eval_condition:
-            last_eval = n_samples
+            last_eval = n_samples - (n_samples % eval_period)
         if checkpoint_condition:
-            last_checkpoint = n_samples
+            last_checkpoint = n_samples - (n_samples % checkpoint_period)
         if train_condition or eval_condition or checkpoint_condition:
             elapsed_time = time.time() - start_time
+            yield n_samples, train_condition, eval_condition, checkpoint_condition
             logger.log(
                 {
                     "time/elapsed": elapsed_time,
@@ -276,7 +281,17 @@ def collect_samples(
                 },
                 step=n_samples,
             )
-            yield n_samples, train_condition, eval_condition, checkpoint_condition
+
+        # We must log AFTER yielding so that other logs can log to steps < n_samples. This is the
+        # case e.g. if we have 16 environments but the train period is 10. In order to log the train
+        # data at 10, we must first log the training and then the rollout log at 16.
+        if done.any():
+            logger.log(collector.log(done), step=n_samples)
+        if autoreset.any():
+            collector.clear(autoreset)
+
+        autoreset = done
+        obs = next_obs
 
 
 def train_policy(
@@ -284,7 +299,6 @@ def train_policy(
     replay_buffer: VectorReplayBuffer,
     steps: int,
     n_train_steps: int,
-    n_samples: int,
     critic_period: int,
     actor_period: int,
     actor_target_period: int,
@@ -300,7 +314,6 @@ def train_policy(
     actor_optimizer: torch.optim.Optimizer,
     collector: Collector,
     reward_clip: tuple[float, float] | None,
-    logger: Logger,
 ):
     """Train the policy using the collected samples in the replay buffer."""
     policy.train()  # Critic is always in train mode, not used for inference
@@ -361,11 +374,6 @@ def train_policy(
             policy.actor.update_target(tau)
         if n_train_steps % critic_target_period == 0:
             policy.critic.update_target(tau)
-
-        # Log the training statistics
-        if log := collector.log():
-            logger.log(log, step=n_samples)
-            collector.clear()
 
 
 @torch.no_grad()
