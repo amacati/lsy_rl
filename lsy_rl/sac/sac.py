@@ -189,6 +189,12 @@ def sac(
     obs, _ = train_envs.reset(seed=seed)
 
     while n_samples < n_steps:
+        # Log collection for each iteration. We store all logs and sort them at the end to ensure
+        # chronological order, even when training and evaluation happen "before" the rollout. This
+        # happens when the rollout step overshoots the required steps for the next training or eval
+        # interval.
+        logs = ()
+
         # Sample data
         obs_tf.update(obs)
         with torch.no_grad():
@@ -222,7 +228,7 @@ def sac(
 
         done = terminated | truncated
         if done.any():
-            logger.log(rollout_collector.log(done), step=n_samples)
+            logs += ((n_samples, rollout_collector.log(done)),)
         if autoreset.any():
             rollout_collector.clear(autoreset)
 
@@ -236,7 +242,7 @@ def sac(
         if train_condition:
             tstart = time.perf_counter()
             policy.train()
-            last_train = n_samples
+            last_train = n_samples - (n_samples % train_period)
             for _ in range(train_steps):
                 n_train_steps += 1
 
@@ -299,22 +305,29 @@ def sac(
                     policy.critic.update_target(tau)
 
             if log := train_collector.log():
-                logger.log(log, step=n_samples)
+                log["time/train"] = time.perf_counter() - tstart
+                logs += ((last_train, log),)
                 train_collector.clear()
             policy.eval()
-            logger.log({"time/train": time.perf_counter() - tstart}, step=n_samples)
 
         # Evaluate the agent
         eval_condition = check_interrupt_sample(n_samples, last_eval, period=eval_period)
         if eval_condition:
             tstart = time.perf_counter()
-            last_eval = n_samples
+            last_eval = n_samples - (n_samples % eval_period)
             eval_seed = seed if seed is None else n_samples // eval_period
             log = evaluate_agent(
-                policy, eval_envs, eval_steps, obs_tf, eval_action_tf, eval_collector, device, eval_seed
+                policy,
+                eval_envs,
+                eval_steps,
+                obs_tf,
+                eval_action_tf,
+                eval_collector,
+                device,
+                eval_seed,
             )
-            logger.log(log, step=n_samples)
-            logger.log({"time/eval": time.perf_counter() - tstart}, step=n_samples)
+            log["time/eval"] = time.perf_counter() - tstart
+            logs += ((last_eval, log),)
 
         # Save training checkpoint
         checkpoint_condition = check_interrupt_sample(
@@ -322,9 +335,13 @@ def sac(
         )
         if checkpoint_condition and checkpoint_path is not None:
             tstart = time.perf_counter()
-            last_checkpoint = n_samples
+            last_checkpoint = n_samples - (n_samples % checkpoint_period)
             checkpoint_partial(step=n_samples, overwrite_policy=overwrite_policy)
-            logger.log({"time/checkpoint": time.perf_counter() - tstart}, step=n_samples)
+            logs += ((last_checkpoint, {"time/checkpoint": time.perf_counter() - tstart}),)
+
+        # Log all collected logs in chronological order
+        for step, log in sorted(logs, key=lambda x: x[0]):
+            logger.log(log, step=step)
 
     # Save final checkpoint
     if checkpoint_path is not None:
