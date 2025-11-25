@@ -31,6 +31,7 @@ def evaluate_agent(
     collector.clear(mask=torch.ones(envs.num_envs, dtype=torch.bool))
     autoreset = torch.zeros(envs.num_envs, dtype=bool, device=device)
     logs = []  # All eval logs are at the same global step, so we average
+    log_cnts = []
     for _ in range(0, n_steps, envs.num_envs):
         with torch.no_grad():
             action, _, _, _ = policy.action_and_value(obs_tf(obs), deterministic=True)
@@ -49,6 +50,7 @@ def evaluate_agent(
         done = terminated | truncated
         if done.any():
             logs.append(collector.log(done))
+            log_cnts.append(done.sum().item())
         if autoreset.any():
             collector.clear(autoreset)
         autoreset = done
@@ -59,8 +61,9 @@ def evaluate_agent(
         for k, v in log.items():
             if k not in avg_log:
                 avg_log[k] = []
-            avg_log[k].extend(v) if isinstance(v, list) else avg_log[k].append(v)
-    avg_log = {k: sum(v) / len(v) for k, v in avg_log.items()}
+            avg_log[k].append(v)
+    weights = np.array(log_cnts) / sum(log_cnts)
+    avg_log = {k: float(sum(np.array(v) * weights)) for k, v in avg_log.items()}
     return avg_log
 
 
