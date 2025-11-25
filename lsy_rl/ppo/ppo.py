@@ -59,7 +59,7 @@ def evaluate_agent(
         for k, v in log.items():
             if k not in avg_log:
                 avg_log[k] = []
-            avg_log[k].append(v)
+            avg_log[k].extend(v) if isinstance(v, list) else avg_log[k].append(v)
     avg_log = {k: sum(v) / len(v) for k, v in avg_log.items()}
     return avg_log
 
